@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+*.part
+*.mkv
+*.mp4
+*.log

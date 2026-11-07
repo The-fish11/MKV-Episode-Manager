@@ -14,6 +14,6 @@ jobs:
         with:
           python-version: '3.11'
       - name: Compile source
-        run: python -m compileall -q main.py core.py metadata.py subtitle_match.py tests
+        run: python -m compileall -q main.py core.py metadata.py subtitle_match.py online_subtitles.py tests
       - name: Run offline unit tests
         run: python -m unittest discover -s tests -v

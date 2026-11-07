@@ -148,31 +148,44 @@ def rank_references(source_lines, folder):
     return sorted(results, key=lambda item: (item["supported"], item["score"],
                                                item["matching_windows"]), reverse=True)
 
-def ocr_image_subtitles(mkv, folder):
-    """Optional local OCR of MKV PGS/VobSub using Subtitle Edit seconv + Tesseract.
+def ocr_image_subtitles(mkv, folder, tracks=None):
+    """OCR one English image subtitle stream read-only with SeConv 5.4 and Tesseract.
 
-    The supported seconv CLI extracts MKV subtitle tracks and OCRs image tracks
-    into temporary SRT files. This requires compatible tools installed on PATH.
-    No source media is changed.
+    SeConv MKV track numbering is 1-based, while ffprobe's stream indexes are
+    zero-based. User test: ffprobe index 3 (dan) was SeConv --track-number:4.
+    Validate this mapping on other disc formats before generalising.
     """
     exe = shutil.which("seconv")
     tess = shutil.which("tesseract")
     if not exe or not tess:
         raise RuntimeError("Image subtitle OCR needs Subtitle Edit seconv and Tesseract installed on PATH")
+    english = [t for t in (tracks or []) if t.get("needs_ocr") and
+               t.get("language", "").lower() in ("eng", "en")]
+    if not english:
+        raise RuntimeError("No English image subtitle stream found for automatic OCR")
+    selected = next((t for t in english if not t.get("forced")), english[0])
+    track_number = int(selected["index"]) + 1
     output = Path(folder)
     output.mkdir(parents=True, exist_ok=True)
-    cmd = [exe, str(mkv), "subrip",
+    cmd = [exe, str(mkv), "subrip", "--track-number:" + str(track_number),
            "--ocr-engine:tesseract", "--ocr-language:eng",
            "--output-folder:" + str(output), "--overwrite"]
     try:
-        run = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError("Subtitle OCR did not finish; check seconv and Tesseract installations") from exc
-    files = sorted(output.glob("*.srt"))
-    if run.returncode != 0 or not files:
-        raise RuntimeError("Subtitle OCR could not read this disc's image subtitle tracks")
-    return [p for p in files if p.stat().st_size <= 15 * 1024 * 1024]
-
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=2400)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("English subtitle OCR exceeded 40 minutes on stream " +
+                           str(selected["index"])) from exc
+    except OSError as exc:
+        raise RuntimeError("Could not launch SeConv OCR") from exc
+    files = sorted(p for p in output.glob("*.srt") if p.stat().st_size <= 15 * 1024 * 1024
+                   and (".eng." in p.name.lower() or ".en." in p.name.lower()))
+    if run.returncode != 0:
+        raise RuntimeError("English subtitle OCR failed on stream " + str(selected["index"]) +
+                           " (exit code " + str(run.returncode) + ")")
+    if not files:
+        raise RuntimeError("OCR completed but did not produce an English .srt file; " +
+                           "check SeConv track mapping for stream " + str(selected["index"]))
+    return files
 
 def analyse_file(mkv, references_dir=None, online=None):
     """Inventory all streams; extract each supported track in a temporary folder."""
@@ -220,7 +233,7 @@ def analyse_file(mkv, references_dir=None, online=None):
         if any(t.get("needs_ocr") for t in report["tracks"]):
             ocr_dir = Path(temporary) / "ocr"
             try:
-                ocr_files = ocr_image_subtitles(mkv, ocr_dir)
+                ocr_files = ocr_image_subtitles(mkv, ocr_dir, report["tracks"])
                 report["ocr_status"] = str(len(ocr_files)) + " OCR subtitle files produced"
                 for ocr_file in ocr_files:
                     lines = read_reference(ocr_file)

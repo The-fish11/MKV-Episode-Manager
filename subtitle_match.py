@@ -14,9 +14,9 @@ from pathlib import Path
 TEXT_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "text", "mov_text"}
 REFERENCE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa", ".txt"}
 WORD = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?")
-TIMESTAMP = re.compile(r"^\\s*(?:\\d{1,2}:)?\\d{1,2}:\\d{2}[,.]\\d{1,3}\\s*-->")
-ASS_PREFIX = re.compile(r"^Dialogue:\\s*", re.I)
-ASS_OVERRIDE = re.compile(r"\\{\\\\[^}]*\\}")
+TIMESTAMP = re.compile(r"^\s*(?:\d{1,2}:)?\d{1,2}:\d{2}[,.]\d{1,3}\s*-->")
+ASS_PREFIX = re.compile(r"^Dialogue:\s*", re.I)
+ASS_OVERRIDE = re.compile(r"\{\\[^}]*\}")
 TAG = re.compile(r"<[^>]+>")
 
 def probe_subtitles(path):
@@ -66,7 +66,7 @@ def cues(text, extension=".srt"):
     """Normalize supported subtitle formats to dialogue lines; strip timing and markup."""
     ext = extension.lower()
     found = []
-    for raw in text.lstrip("\\ufeff").splitlines():
+    for raw in text.lstrip("\ufeff").splitlines():
         line = raw.strip()
         if not line:
             continue
@@ -86,8 +86,8 @@ def cues(text, extension=".srt"):
             if "-->" in line:
                 continue
         line = TAG.sub("", line)
-        line = re.sub(r"\\{\\\\[^}]+\\}", "", line)
-        line = re.sub(r"\\[[^\\]]{1,55}\\]", " ", line)
+        line = re.sub(r"\{\\[^}]+\}", "", line)
+        line = re.sub(r"\[[^\]]{1,55}\]", " ", line)
         words = WORD.findall(line.lower())
         if len(words) >= 4:
             found.append(" ".join(words))

@@ -244,6 +244,8 @@ class Main(QMainWindow):
         lines=[report['status'],'',f'Embedded subtitle streams: {len(report["tracks"])}']
         if 'online_reference_status' in report:
             lines.extend(['Online subtitle reference search:',report['online_reference_status'],''])
+        if 'ocr_status' in report:
+            lines.extend(['Image subtitle OCR:',report['ocr_status'],''])
         for track in report['tracks']:
             lines.append(f'Stream {track["index"]}: {track["language"]} / {track["codec"]} — {track["status"]} '
                          f'({track.get("cue_count",0)} dialogue cues)')

@@ -51,7 +51,7 @@ The following table lists the tools actually used by the application or its v0.4
 - **TMDB search**: retrieve movie/series candidates and metadata. **These are possible titles, not verified video matches**. Choose the correct item yourself.
 - **Video inspection and six-frame gallery**: FFmpeg/FFprobe examine source files read-only. Automatic scene-to-reference recognition is **not yet implemented**.
 - **Analyse subtitles**: FFprobe inventories tracks; FFmpeg extracts supported embedded text subtitles; **SeConv + Tesseract** can attempt OCR on English image-based DVD subtitles (experimental). The first OCR run can take more than ten minutes.
-- **Online subtitle references**: if a SubDL key is entered, the app attempts to retrieve reference subtitles automatically from the title/TMDB ID and season, then compare extracted dialogue. You **do not need a pre-existing local subtitle collection**.
+- **Online subtitle references**: if a SubDL key is entered, the app tries the selected TMDB ID first and falls back to the DVD-cover title when needed; available reference subtitles are downloaded temporarily and compared against extracted English dialogue. Distinct statuses describe failed searches, missing listings, failed downloads, and insufficient matches. You **do not need a pre-existing local subtitle collection**.
 - **Match evidence**: reports overlap and matching-cue counts. Scores are heuristic, **not a probability or verified identification percentage**. Online lookup, OCR, reference coverage and editions can fail, and successful OCR alone does not prove the title.
 - **Review and export**: every file must be approved before a verified copy is exported into a separate destination. Never overwrite original source files.
 
@@ -62,7 +62,7 @@ The following table lists the tools actually used by the application or its v0.4
 - SubDL API searches require a known title, TMDB identity or season; the service does **not** supply a general reverse-dialogue search across every film/episode. Some searches return no references.
 - OCR comparison against online references is experimental, with no calibrated accuracy %. A no-match result must remain **unverified**, not a guessed title.
 - **Whole-season automatic episode assignment, audio transcription and automatic visual reference matching are not implemented yet.** Do not assign episode numbers by MKV file order.
-- Extracted OCR text is temporary in the current development pipeline; **persistent OCR caching** is planned so repeated tests don't each take 10–15 minutes.
+- **Persistent English OCR caching is implemented in the development branch**: cached subtitle text is stored locally in `%LOCALAPPDATA%\\MKVEpisodeManager\\subtitle_cache`, keyed to source file metadata plus sampled bytes. Repeated analysis can reuse it without rerunning OCR; use **Clear OCR cache** to remove derived transcripts. The user can import a previously extracted SRT via **Import OCR SRT**. Real Windows validation of this new integration is still pending.
 - Video inspection, diagnostics and safe-copy export rely on FFmpeg/Python dependencies, but the originals remain untouched.
 
 See [v0.4.2 subtitle development notes](docs/V0.4.2_SUBTITLE_IDENTIFICATION.md) for experimental details and testing instructions.

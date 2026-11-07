@@ -36,30 +36,55 @@ class SearchWorker(QThread):
         except Exception as e:self.done.emit([],str(e))
 class SearchDialog(QDialog):
     def __init__(self,parent,key,kind,query):
-        super().__init__(parent);self.setWindowTitle('Find '+('movie' if kind=='movie' else 'TV series')+' on TMDB');self.resize(650,510)
+        super().__init__(parent)
+        self.setWindowTitle('Possible '+('movies' if kind=='movie' else 'TV series')+' from TMDB')
+        self.resize(760,570)
         self.key=key;self.kind=kind;self.choice=None;self.worker=None
-        layout=QVBoxLayout(self);top=QHBoxLayout();self.query=QLineEdit(query);top.addWidget(self.query)
+        layout=QVBoxLayout(self)
+        warning=QLabel('CONTENT UNVERIFIED — These are TMDB search results, NOT video-identified matches. '
+                       'No accuracy percentage is available. Select the film yourself until dialogue or '
+                       'visual comparisons have produced a supported match.')
+        warning.setWordWrap(True)
+        warning.setStyleSheet('color:#ffd58c;background:#303041;border:1px solid #846132;'
+                              'padding:12px;border-radius:8px;font-weight:600')
+        layout.addWidget(warning)
+        top=QHBoxLayout();self.query=QLineEdit(query);top.addWidget(self.query)
         b=QPushButton('Search');b.clicked.connect(self.search);top.addWidget(b);layout.addLayout(top)
-        self.status=QLabel('Search by title; select the correct year and description.');layout.addWidget(self.status)
-        self.results=QListWidget();self.results.itemDoubleClicked.connect(lambda _:self.choose());layout.addWidget(self.results)
-        select=QPushButton('Use selected title');select.setObjectName('primary');select.clicked.connect(self.choose);layout.addWidget(select)
+        self.status=QLabel('Searching by title only. No video-content verification.')
+        layout.addWidget(self.status)
+        self.results=QListWidget()
+        self.results.setWordWrap(True)
+        self.results.setSpacing(6)
+        self.results.itemDoubleClicked.connect(lambda _:self.choose())
+        layout.addWidget(self.results)
+        select=QPushButton('Use selected title (manual choice)')
+        select.setObjectName('primary')
+        select.clicked.connect(self.choose)
+        layout.addWidget(select)
         self.search()
     def search(self):
         if not self.query.text().strip():return
-        self.results.clear();self.status.setText('Searching TMDB…')
+        self.results.clear();self.status.setText('Searching TMDB — no video comparison…')
         self.worker=SearchWorker(self.key,self.query.text().strip(),self.kind)
         self.worker.done.connect(self.show_results);self.worker.start()
     def show_results(self,results,error):
-        self.status.setText(error or f'{len(results)} matches — double-click a result to select')
-        for item in results:
-            title=item.get('title') or item.get('name') or 'Untitled';date=item.get('release_date') or item.get('first_air_date') or ''
-            summary=(item.get('overview') or '')[:170]
-            entry=QListWidgetItem(f'{title} ({date[:4] or "year unknown"})\n{summary}')
-            entry.setData(Qt.UserRole,item);self.results.addItem(entry)
+        self.status.setText(error or f'{len(results)} possible titles — not ranked by footage matching')
+        for candidate in results:
+            title=candidate.get('title') or candidate.get('name') or 'Untitled'
+            date=candidate.get('release_date') or candidate.get('first_air_date') or ''
+            overview=(candidate.get('overview') or 'No synopsis available')[:210]
+            entry=QListWidgetItem(f'POSSIBLE MATCH · NOT VERIFIED\\n{title} ({date[:4] or "year unknown"})\\n{overview}')
+            entry.setData(Qt.UserRole,candidate)
+            self.results.addItem(entry)
+        if not results and not error:
+            self.status.setText('No TMDB titles found. Try another title or spelling.')
     def choose(self):
         row=self.results.currentItem()
-        if row is None:return
-        self.choice=row.data(Qt.UserRole);self.accept()
+        if row is None:
+            QMessageBox.information(self,'Choose a title','Select a result first.')
+            return
+        self.choice=row.data(Qt.UserRole)
+        self.accept()
 class Main(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle('MKV Episode Manager • v0.4.2 Subtitle Identification Test');self.resize(1420,900)

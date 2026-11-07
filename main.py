@@ -17,13 +17,14 @@ class CopyWorker(QThread):
         self.done.emit(ok,errors)
 class SubtitleWorker(QThread):
     done=Signal(dict,str)
-    def __init__(self,path,reference_folder):
+    def __init__(self,path,reference_folder=None,online=None):
         super().__init__()
         self.path=path
         self.reference_folder=reference_folder
+        self.online=online
     def run(self):
         try:
-            self.done.emit(subtitle_match.analyse_file(self.path,self.reference_folder),'')
+            self.done.emit(subtitle_match.analyse_file(self.path,self.reference_folder,online=self.online),'')
         except Exception as exc:
             self.done.emit({},str(exc))
 
@@ -61,21 +62,25 @@ class SearchDialog(QDialog):
         self.choice=row.data(Qt.UserRole);self.accept()
 class Main(QMainWindow):
     def __init__(self):
-        super().__init__();self.setWindowTitle('MKV Episode Manager • v0.4.1 Visual Identification');self.resize(1420,900)
+        super().__init__();self.setWindowTitle('MKV Episode Manager • v0.4.2 Subtitle Identification Test');self.resize(1420,900)
         self.items=[];self.history=[];self.metadata={};self.episodes={};self.worker=None;self.search_worker=None;self.subtitle_worker=None;self.tmdb_key=os.environ.get('TMDB_API_KEY','')
         self.temp=tempfile.TemporaryDirectory(prefix='mkv_visual_')
         w=QWidget();self.setCentralWidget(w);v=QVBoxLayout(w);v.setContentsMargins(20,16,20,16)
         h=QLabel('MKV Episode Manager   /   Visual Identification');h.setStyleSheet('font-size:22pt;font-weight:700');v.addWidget(h)
-        safety=QLabel('v0.4.1  •  Metadata search + scene gallery  •  Manual episode review  •  Copy-only SHA-256 verified export');safety.setStyleSheet('color:#91bcff');v.addWidget(safety)
+        safety=QLabel('v0.4.2 TEST  •  TMDB + subtitle reference search + scene gallery  •  Manual episode review  •  Copy-only SHA-256 verified export');safety.setStyleSheet('color:#91bcff');v.addWidget(safety)
         r=QHBoxLayout();self.mode=QComboBox();self.mode.addItems(core.MODES);self.mode.currentTextChanged.connect(self.mode_changed)
         self.title=QLineEdit();self.title.setPlaceholderText('Series or movie title');self.title.textChanged.connect(self.title_changed)
         self.season=QSpinBox();self.season.setRange(0,99);self.season.setValue(1);self.season.valueChanged.connect(self.season_changed)
         self.key=QLineEdit(self.tmdb_key);self.key.setEchoMode(QLineEdit.Password);self.key.setPlaceholderText('TMDB API key or Read Access Token (not saved)')
+        self.subdl_key=QLineEdit(os.environ.get('SUBDL_API_KEY',''));self.subdl_key.setEchoMode(QLineEdit.Password);self.subdl_key.setPlaceholderText('SubDL API key for automatic subtitle search (not saved)')
         for label,control,stretch in [('Mode',self.mode,1),('Title',self.title,3),('Season',self.season,1),('TMDB token',self.key,3)]:
             label_widget=QLabel(label)
             r.addWidget(label_widget);r.addWidget(control,stretch)
             if label=='Season':self.season_label=label_widget
         v.addLayout(r)
+        sr=QHBoxLayout();sr.addWidget(QLabel('SubDL key'));sr.addWidget(self.subdl_key,1)
+        sr.addWidget(QLabel('DVD title and season drive reference search; generic filenames are ignored.'))
+        v.addLayout(sr)
         bar=QHBoxLayout()
         for name,callback in [('Import MKVs',self.import_folder),('Find movie / series',self.find_title),('Fetch season episodes',self.fetch_episodes),('Scene gallery',self.gallery),('Analyse subtitles',self.analyse_subtitles),('Inspect selected',self.inspect_selected),('Save project',self.save_project),('Open project',self.open_project)]:
             b=QPushButton(name);b.clicked.connect(callback);bar.addWidget(b)
@@ -110,7 +115,10 @@ class Main(QMainWindow):
         paths=sorted(p for p in Path(folder).rglob('*') if p.is_file() and p.suffix.lower()=='.mkv' and not p.is_symlink())
         if not paths:QMessageBox.warning(self,'No MKVs','No MKV files found');return
         self.items=[{'path':str(p.resolve()),'episode':'','title':'','year':'','proposed':'','approved':False,'technical':{}} for p in paths]
-        if not self.title.text().strip():self.title.setText(metadata.guess_title(paths[0].name))
+        if not self.title.text().strip():
+            guess=metadata.guess_title(paths[0].name)
+            if guess.lower() not in ('title','mkv','title t00','title_t00'):
+                self.title.setText(guess)
         self.refresh();self.note(f'Imported {len(paths)} MKVs (read-only).')
     def refresh(self):
         self.table.blockSignals(True);self.table.setRowCount(len(self.items))
@@ -201,18 +209,28 @@ class Main(QMainWindow):
     def analyse_subtitles(self):
         row=self.row()
         if row is None:return
-        QMessageBox.information(self,'Subtitle identification',
-            'The application will inspect the embedded subtitle tracks.\n\n'
-            'For dialogue comparison, choose a local folder with known reference subtitles '
-            '(.srt, .vtt, .ass, .ssa or .txt).\n\n'
-            'Press Cancel in the folder chooser to inspect subtitle tracks without references. '
-            'DVD VobSub and Blu-ray PGS are image subtitles and require OCR, which is not yet implemented. '
-            'No source MKV will be changed.')
-        folder=QFileDialog.getExistingDirectory(self,'Reference subtitle folder (Cancel to inspect only)')
+        title=self.title.text().strip()
+        api_key=self.subdl_key.text().strip()
+        if not title or title.lower() in ('title','title_t00','mkv','mkv 00'):
+            QMessageBox.information(self,'Enter DVD title',
+                'Enter the actual movie or TV series name from the DVD cover before searching.')
+            return
+        online=None
+        if api_key:
+            online={'key':api_key,'title':title,
+                    'kind':'movie' if self.mode.currentText()=='Movie' else 'tv',
+                    'season':self.season.value() if self.mode.currentText()!='Movie' else None,
+                    'tmdb_id':self.metadata.get('id') if self.metadata.get('kind')==(
+                        'movie' if self.mode.currentText()=='Movie' else 'tv') else None}
+        else:
+            if QMessageBox.question(self,'SubDL key needed',
+                'No SubDL API key is entered. Continue with subtitle track inspection only?\\n'
+                'Online matching needs your own free SubDL API key.') != QMessageBox.Yes:
+                return
         self.subtitle_row=row
         self.subtitle_button_busy(True)
         self.note('Analysing embedded subtitles; this may take a moment.')
-        self.subtitle_worker=SubtitleWorker(self.items[row]['path'],folder or None)
+        self.subtitle_worker=SubtitleWorker(self.items[row]['path'],online=online)
         self.subtitle_worker.done.connect(self.subtitle_done)
         self.subtitle_worker.start()
     def subtitle_button_busy(self,busy):
@@ -224,6 +242,8 @@ class Main(QMainWindow):
         row=self.subtitle_row
         self.items[row]['subtitle_analysis']=report
         lines=[report['status'],'',f'Embedded subtitle streams: {len(report["tracks"])}']
+        if 'online_reference_status' in report:
+            lines.extend(['Online subtitle reference search:',report['online_reference_status'],''])
         for track in report['tracks']:
             lines.append(f'Stream {track["index"]}: {track["language"]} / {track["codec"]} — {track["status"]} '
                          f'({track.get("cue_count",0)} dialogue cues)')

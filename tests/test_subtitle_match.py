@@ -38,7 +38,7 @@ class SubtitleTests(unittest.TestCase):
         self.assertEqual(len(subtitle_match.cues(vtt, ".vtt")), 1)
         ass = ("[Events]\n"
                "Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,"
-               "{\\\\i1}Nobody remembered who had hidden the silver key beneath the staircase")
+               "{\\i1}Nobody remembered who had hidden the silver key beneath the staircase")
         self.assertEqual(len(subtitle_match.cues(ass, ".ass")), 1)
 
     def test_multiline_matching_and_unrelated(self):

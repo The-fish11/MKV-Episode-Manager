@@ -147,12 +147,28 @@ def rank_references(source_lines, folder):
     return sorted(results, key=lambda item: (item["supported"], item["score"],
                                                item["matching_windows"]), reverse=True)
 
-def analyse_file(mkv, references_dir=None):
+def analyse_file(mkv, references_dir=None, online=None):
     """Inventory all streams; extract each supported track in a temporary folder."""
     tracks = probe_subtitles(mkv)
     report = {"source": str(mkv), "tracks": [], "top_matches": [],
               "status": "No usable text subtitle evidence", "verified": False}
     with tempfile.TemporaryDirectory(prefix="mkv_subtitles_") as temporary:
+        if online:
+            import online_subtitles
+            online_folder = Path(temporary) / "references"
+            online_folder.mkdir()
+            try:
+                downloaded = online_subtitles.download_references(
+                    online["key"], online["title"], online["kind"], online_folder,
+                    season=online.get("season"), tmdb_id=online.get("tmdb_id"))
+                references_dir = online_folder
+                report["online_reference_count"] = len(downloaded)
+                report["online_reference_status"] = (
+                    str(len(downloaded)) + " online subtitle files retrieved"
+                    if downloaded else "No online subtitle references found")
+            except (RuntimeError, ValueError) as exc:
+                report["online_reference_count"] = 0
+                report["online_reference_status"] = str(exc)
         for stream in tracks:
             current = dict(stream)
             if not stream["text_supported"]:

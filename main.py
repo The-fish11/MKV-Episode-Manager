@@ -59,11 +59,15 @@ class Main(QMainWindow):
         self.title=QLineEdit();self.title.setPlaceholderText('Series or movie title');self.title.textChanged.connect(self.title_changed)
         self.season=QSpinBox();self.season.setRange(0,99);self.season.setValue(1);self.season.valueChanged.connect(self.season_changed)
         self.key=QLineEdit(self.tmdb_key);self.key.setEchoMode(QLineEdit.Password);self.key.setPlaceholderText('TMDB API key or Read Access Token (not saved)')
-        for label,control,stretch in [('Mode',self.mode,1),('Title',self.title,3),('Season',self.season,1),('TMDB token',self.key,3)]:r.addWidget(QLabel(label));r.addWidget(control,stretch)
+        for label,control,stretch in [('Mode',self.mode,1),('Title',self.title,3),('Season',self.season,1),('TMDB token',self.key,3)]:
+            label_widget=QLabel(label)
+            r.addWidget(label_widget);r.addWidget(control,stretch)
+            if label=='Season':self.season_label=label_widget
         v.addLayout(r)
         bar=QHBoxLayout()
         for name,callback in [('Import MKVs',self.import_folder),('Find movie / series',self.find_title),('Fetch season episodes',self.fetch_episodes),('Scene gallery',self.gallery),('Inspect selected',self.inspect_selected),('Save project',self.save_project),('Open project',self.open_project)]:
             b=QPushButton(name);b.clicked.connect(callback);bar.addWidget(b)
+            if name=='Fetch season episodes':self.fetch_episodes_button=b
         v.addLayout(bar)
         self.poster=QLabel('No poster selected');self.poster.setAlignment(Qt.AlignCenter);self.poster.setFixedSize(105,150);self.poster.setStyleSheet('background:#1c2a3e;border-radius:8px')
         summary=QHBoxLayout();summary.addWidget(self.poster)
@@ -80,6 +84,7 @@ class Main(QMainWindow):
             if name.startswith('Export'):b.setObjectName('primary');self.export_button=b
             bottom.addWidget(b)
         v.addLayout(bottom);self.progress=QProgressBar();self.progress.hide();v.addWidget(self.progress)
+        self.mode_changed()
         self.note('Online TMDB search requires your own free TMDB API credentials. No key is saved in project files.')
     def note(self,msg):self.log.append(msg)
     def row(self):
@@ -123,7 +128,11 @@ class Main(QMainWindow):
         self.refresh()
     def season_changed(self,*_):self.title_changed()
     def mode_changed(self,*_):
-        self.season.setEnabled(self.mode.currentText()!='Movie');self.title_changed()
+        is_tv=self.mode.currentText()!='Movie'
+        self.season_label.setVisible(is_tv)
+        self.season.setVisible(is_tv)
+        self.fetch_episodes_button.setVisible(is_tv)
+        self.title_changed()
     def find_title(self):
         kind='movie' if self.mode.currentText()=='Movie' else 'tv'
         dialog=SearchDialog(self,self.key.text(),kind,self.title.text())
@@ -191,6 +200,7 @@ class Main(QMainWindow):
             self.mode.setCurrentText(data['mode']);self.title.setText(data.get('title',''));self.season.setValue(int(data.get('season',1)))
             for control in (self.mode,self.title,self.season):control.blockSignals(False)
             self.items=data.get('items',[]);self.metadata=data.get('metadata',{});self.episodes=data.get('episodes',{});self.history=data.get('history',[])
+            self.mode_changed()
             self.refresh();self.load_poster(self.metadata.get('poster_path'));self.note('Project restored. Check source paths and metadata before exporting.')
         except Exception as e:
             for control in (self.mode,self.title,self.season):control.blockSignals(False)

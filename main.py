@@ -3,7 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt,QThread,Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QPushButton,QComboBox,QSpinBox,QTableWidget,QTableWidgetItem,QHeaderView,QFileDialog,QMessageBox,QDialog,QListWidget,QListWidgetItem,QGridLayout,QScrollArea,QTextEdit,QProgressBar,QCheckBox,QGroupBox)
-import core,metadata
+import core,metadata,subtitle_match
 CSS='''QWidget{background:#101827;color:#e8eef8;font:10pt "Segoe UI"}QPushButton{background:#263952;border:1px solid #39526d;border-radius:8px;padding:9px}QPushButton:hover{background:#345479}QPushButton#primary{background:#2879ed;color:white}QLineEdit,QComboBox,QSpinBox,QTableWidget,QTextEdit,QListWidget{background:#192638;border:1px solid #334862;border-radius:7px;padding:6px}QHeaderView::section{background:#253851;color:#fff;padding:8px;border:0}QGroupBox{border:1px solid #34465d;border-radius:10px;margin-top:10px;padding:12px}QGroupBox::title{subcontrol-origin:margin;left:12px;padding:0 5px}QProgressBar{border:0;background:#263952;text-align:center}QProgressBar::chunk{background:#2885ee}'''
 class CopyWorker(QThread):
     update=Signal(int);done=Signal(list,list)
@@ -15,6 +15,18 @@ class CopyWorker(QThread):
             except Exception as e:errors.append({'source':src,'error':str(e)})
             self.update.emit(int(100*(i+1)/len(self.tasks)))
         self.done.emit(ok,errors)
+class SubtitleWorker(QThread):
+    done=Signal(dict,str)
+    def __init__(self,path,reference_folder):
+        super().__init__()
+        self.path=path
+        self.reference_folder=reference_folder
+    def run(self):
+        try:
+            self.done.emit(subtitle_match.analyse_file(self.path,self.reference_folder),'')
+        except Exception as exc:
+            self.done.emit({},str(exc))
+
 class SearchWorker(QThread):
     done=Signal(list,str)
     def __init__(self,key,query,kind):super().__init__();self.key=key;self.query=query;self.kind=kind
@@ -50,7 +62,7 @@ class SearchDialog(QDialog):
 class Main(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle('MKV Episode Manager • v0.4.1 Visual Identification');self.resize(1420,900)
-        self.items=[];self.history=[];self.metadata={};self.episodes={};self.worker=None;self.search_worker=None;self.tmdb_key=os.environ.get('TMDB_API_KEY','')
+        self.items=[];self.history=[];self.metadata={};self.episodes={};self.worker=None;self.search_worker=None;self.subtitle_worker=None;self.tmdb_key=os.environ.get('TMDB_API_KEY','')
         self.temp=tempfile.TemporaryDirectory(prefix='mkv_visual_')
         w=QWidget();self.setCentralWidget(w);v=QVBoxLayout(w);v.setContentsMargins(20,16,20,16)
         h=QLabel('MKV Episode Manager   /   Visual Identification');h.setStyleSheet('font-size:22pt;font-weight:700');v.addWidget(h)
@@ -65,9 +77,10 @@ class Main(QMainWindow):
             if label=='Season':self.season_label=label_widget
         v.addLayout(r)
         bar=QHBoxLayout()
-        for name,callback in [('Import MKVs',self.import_folder),('Find movie / series',self.find_title),('Fetch season episodes',self.fetch_episodes),('Scene gallery',self.gallery),('Inspect selected',self.inspect_selected),('Save project',self.save_project),('Open project',self.open_project)]:
+        for name,callback in [('Import MKVs',self.import_folder),('Find movie / series',self.find_title),('Fetch season episodes',self.fetch_episodes),('Scene gallery',self.gallery),('Analyse subtitles',self.analyse_subtitles),('Inspect selected',self.inspect_selected),('Save project',self.save_project),('Open project',self.open_project)]:
             b=QPushButton(name);b.clicked.connect(callback);bar.addWidget(b)
             if name=='Fetch season episodes':self.fetch_episodes_button=b
+            if name=='Analyse subtitles':self.subtitle_button=b
         v.addLayout(bar)
         self.poster=QLabel('No poster selected');self.poster.setAlignment(Qt.AlignCenter);self.poster.setFixedSize(105,150);self.poster.setStyleSheet('background:#1c2a3e;border-radius:8px')
         summary=QHBoxLayout();summary.addWidget(self.poster)
@@ -185,6 +198,47 @@ class Main(QMainWindow):
             pix=QPixmap(file);label.setPixmap(pix.scaled(300,175,Qt.KeepAspectRatio,Qt.SmoothTransformation))
             bv.addWidget(label);bv.addWidget(QLabel(f'{seconds//60:02d}:{seconds%60:02d}'));grid.addWidget(box,i//3,i%3)
         dialog.exec()
+    def analyse_subtitles(self):
+        row=self.row()
+        if row is None:return
+        QMessageBox.information(self,'Subtitle identification',
+            'The application will inspect the embedded subtitle tracks.\\n\\n'
+            'For dialogue comparison, choose a local folder with known reference subtitles '
+            '(.srt, .vtt, .ass, .ssa or .txt).\\n\\n'
+            'Press Cancel in the folder chooser to inspect subtitle tracks without references. '
+            'DVD VobSub and Blu-ray PGS are image subtitles and require OCR, which is not yet implemented. '
+            'No source MKV will be changed.')
+        folder=QFileDialog.getExistingDirectory(self,'Reference subtitle folder (Cancel to inspect only)')
+        self.subtitle_row=row
+        self.subtitle_button_busy(True)
+        self.note('Analysing embedded subtitles; this may take a moment.')
+        self.subtitle_worker=SubtitleWorker(self.items[row]['path'],folder or None)
+        self.subtitle_worker.done.connect(self.subtitle_done)
+        self.subtitle_worker.start()
+    def subtitle_button_busy(self,busy):
+        if hasattr(self,'subtitle_button'):self.subtitle_button.setEnabled(not busy)
+    def subtitle_done(self,report,error):
+        self.subtitle_button_busy(False)
+        if error:
+            QMessageBox.warning(self,'Subtitle analysis failed',error);self.note('Subtitle analysis failed.');return
+        row=self.subtitle_row
+        self.items[row]['subtitle_analysis']=report
+        lines=[report['status'],'',f'Embedded subtitle streams: {len(report["tracks"])}']
+        for track in report['tracks']:
+            lines.append(f'Stream {track["index"]}: {track["language"]} / {track["codec"]} — {track["status"]} '
+                         f'({track.get("cue_count",0)} dialogue cues)')
+        if report['top_matches']:
+            lines.extend(['','Reference subtitle matches (heuristic overlap, NOT probability of correctness):'])
+            for match in report['top_matches'][:5]:
+                lines.append(f'{match["name"]}: score {match["score"]}% | '
+                             f'{match["matching_windows"]} matching 5-word windows | '
+                             f'{match["matching_cues"]} matching cues | '
+                             f'{"supported" if match["supported"] else "insufficient evidence"}')
+        else:lines.extend(['','No supported content match. Movie/episode is unverified.'])
+        lines.append('')
+        lines.append('Candidate matches require your review. No filename has been approved automatically.')
+        QMessageBox.information(self,'Subtitle analysis results','\\n'.join(lines))
+        self.note(f'Subtitle analysis: {Path(self.items[row]["path"]).name}: {report["status"]}')
     def save_project(self):
         path,_=QFileDialog.getSaveFileName(self,'Save project','','MKV project (*.json)')
         if not path:return
@@ -208,7 +262,7 @@ class Main(QMainWindow):
     def report(self):
         path,_=QFileDialog.getSaveFileName(self,'Save diagnostics','','JSON report (*.json)')
         if not path:return
-        report={'version':'0.4.1','metadata':self.metadata,'title':self.title.text(),'mode':self.mode.currentText(),'files':[{'filename':Path(x['path']).name,'proposed':x.get('proposed'),'approved':x.get('approved'),'technical':x.get('technical')} for x in self.items],'export_history':self.history,'visual_identification':'Manual scene review only; no image-reference matching','audio_identification':'Not implemented'}
+        report={'version':'0.4.1','metadata':self.metadata,'title':self.title.text(),'mode':self.mode.currentText(),'files':[{'filename':Path(x['path']).name,'proposed':x.get('proposed'),'approved':x.get('approved'),'technical':x.get('technical')} for x in self.items],'export_history':self.history,'subtitle_analysis':[{'file':Path(x['path']).name,'result':x.get('subtitle_analysis')} for x in self.items], 'visual_identification':'Manual scene review only; no image-reference matching','audio_identification':'Not implemented'}
         try:core.save(path,report);self.note('Diagnostic report saved.')
         except Exception as e:QMessageBox.warning(self,'Report failed',str(e))
     def export(self):

@@ -6,6 +6,7 @@ Image-based DVD VobSub / Blu-ray PGS streams are flagged for optional future OCR
 """
 import json
 import re
+import shutil
 import subprocess
 import tempfile
 from collections import Counter
@@ -147,6 +148,32 @@ def rank_references(source_lines, folder):
     return sorted(results, key=lambda item: (item["supported"], item["score"],
                                                item["matching_windows"]), reverse=True)
 
+def ocr_image_subtitles(mkv, folder):
+    """Optional local OCR of MKV PGS/VobSub using Subtitle Edit seconv + Tesseract.
+
+    The supported seconv CLI extracts MKV subtitle tracks and OCRs image tracks
+    into temporary SRT files. This requires compatible tools installed on PATH.
+    No source media is changed.
+    """
+    exe = shutil.which("seconv")
+    tess = shutil.which("tesseract")
+    if not exe or not tess:
+        raise RuntimeError("Image subtitle OCR needs Subtitle Edit seconv and Tesseract installed on PATH")
+    output = Path(folder)
+    output.mkdir(parents=True, exist_ok=True)
+    cmd = [exe, str(mkv), "subrip",
+           "--ocr-engine:tesseract", "--ocr-language:eng",
+           "--output-folder:" + str(output), "--overwrite"]
+    try:
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Subtitle OCR did not finish; check seconv and Tesseract installations") from exc
+    files = sorted(output.glob("*.srt"))
+    if run.returncode != 0 or not files:
+        raise RuntimeError("Subtitle OCR could not read this disc's image subtitle tracks")
+    return [p for p in files if p.stat().st_size <= 15 * 1024 * 1024]
+
+
 def analyse_file(mkv, references_dir=None, online=None):
     """Inventory all streams; extract each supported track in a temporary folder."""
     tracks = probe_subtitles(mkv)
@@ -190,6 +217,22 @@ def analyse_file(mkv, references_dir=None, online=None):
                 except RuntimeError:
                     current["status"] = "Text extraction failed"
             report["tracks"].append(current)
+        if any(t.get("needs_ocr") for t in report["tracks"]):
+            ocr_dir = Path(temporary) / "ocr"
+            try:
+                ocr_files = ocr_image_subtitles(mkv, ocr_dir)
+                report["ocr_status"] = str(len(ocr_files)) + " OCR subtitle files produced"
+                for ocr_file in ocr_files:
+                    lines = read_reference(ocr_file)
+                    if not lines:
+                        continue
+                    if references_dir:
+                        for match in rank_references(lines, references_dir)[:5]:
+                            report["top_matches"].append({
+                                "subtitle_index": None, "language": "eng",
+                                "extraction_method": "OCR", **match})
+            except RuntimeError as exc:
+                report["ocr_status"] = str(exc)
     report["top_matches"].sort(key=lambda m: (m["supported"], m["score"]), reverse=True)
     report["top_matches"] = report["top_matches"][:8]
     if report["top_matches"] and report["top_matches"][0]["supported"]:

@@ -3,7 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt,QThread,Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QPushButton,QComboBox,QSpinBox,QTableWidget,QTableWidgetItem,QHeaderView,QFileDialog,QMessageBox,QDialog,QListWidget,QListWidgetItem,QGridLayout,QScrollArea,QTextEdit,QProgressBar,QCheckBox,QGroupBox)
-import core,metadata,subtitle_match
+import core,metadata,subtitle_match,subtitle_cache
 CSS='''QWidget{background:#101827;color:#e8eef8;font:10pt "Segoe UI"}QPushButton{background:#263952;border:1px solid #39526d;border-radius:8px;padding:9px}QPushButton:hover{background:#345479}QPushButton#primary{background:#2879ed;color:white}QLineEdit,QComboBox,QSpinBox,QTableWidget,QTextEdit,QListWidget{background:#192638;border:1px solid #334862;border-radius:7px;padding:6px}QHeaderView::section{background:#253851;color:#fff;padding:8px;border:0}QGroupBox{border:1px solid #34465d;border-radius:10px;margin-top:10px;padding:12px}QGroupBox::title{subcontrol-origin:margin;left:12px;padding:0 5px}QProgressBar{border:0;background:#263952;text-align:center}QProgressBar::chunk{background:#2885ee}'''
 class CopyWorker(QThread):
     update=Signal(int);done=Signal(list,list)
@@ -17,6 +17,7 @@ class CopyWorker(QThread):
         self.done.emit(ok,errors)
 class SubtitleWorker(QThread):
     done=Signal(dict,str)
+    status_update=Signal(str)
     def __init__(self,path,reference_folder=None,online=None):
         super().__init__()
         self.path=path
@@ -24,7 +25,7 @@ class SubtitleWorker(QThread):
         self.online=online
     def run(self):
         try:
-            self.done.emit(subtitle_match.analyse_file(self.path,self.reference_folder,online=self.online),'')
+            self.done.emit(subtitle_match.analyse_file(self.path,self.reference_folder,online=self.online,progress=self.status_update.emit),'')
         except Exception as exc:
             self.done.emit({},str(exc))
 
@@ -107,7 +108,7 @@ class Main(QMainWindow):
         sr.addWidget(QLabel('DVD title and season drive reference search; generic filenames are ignored.'))
         v.addLayout(sr)
         bar=QHBoxLayout()
-        for name,callback in [('Import MKVs',self.import_folder),('Find movie / series',self.find_title),('Fetch season episodes',self.fetch_episodes),('Scene gallery',self.gallery),('Analyse subtitles',self.analyse_subtitles),('Inspect selected',self.inspect_selected),('Save project',self.save_project),('Open project',self.open_project)]:
+        for name,callback in [('Import MKVs',self.import_folder),('Find movie / series',self.find_title),('Fetch season episodes',self.fetch_episodes),('Scene gallery',self.gallery),('Analyse subtitles',self.analyse_subtitles),('Import OCR SRT',self.import_ocr_srt),('Clear OCR cache',self.clear_ocr_cache),('Inspect selected',self.inspect_selected),('Save project',self.save_project),('Open project',self.open_project)]:
             b=QPushButton(name);b.clicked.connect(callback);bar.addWidget(b)
             if name=='Fetch season episodes':self.fetch_episodes_button=b
             if name=='Analyse subtitles':self.subtitle_button=b
@@ -257,11 +258,46 @@ class Main(QMainWindow):
         self.note('Analysing embedded subtitles; this may take a moment.')
         self.subtitle_worker=SubtitleWorker(self.items[row]['path'],online=online)
         self.subtitle_worker.done.connect(self.subtitle_done)
+        self.subtitle_worker.status_update.connect(self.subtitle_progress)
         self.subtitle_worker.start()
+    def subtitle_progress(self,message):
+        self.note(message)
+        self.status.setText('Subtitle analysis: ' + message)
+    def import_ocr_srt(self):
+        row=self.row()
+        if row is None:return
+        path,_=QFileDialog.getOpenFileName(self,'Select previously OCR-converted English subtitle file',
+                                          '', 'SubRip subtitles (*.srt)')
+        if not path:return
+        try:
+            tracks=subtitle_match.probe_subtitles(self.items[row]['path'])
+            english=[t for t in tracks if t['needs_ocr'] and
+                     t['language'].lower() in ('eng','en')]
+            if not english:raise ValueError('No English image subtitle track found in this MKV.')
+            chosen=next((t for t in english if not t.get('forced')),english[0])
+            if not subtitle_match.read_reference(path):
+                raise ValueError('This SRT contains no usable English dialogue.')
+            if QMessageBox.question(self,'Confirm OCR import',
+                    'This transcript must come from the selected MKV and its English subtitle track.\\n'
+                    'Use it for future comparisons?')!=QMessageBox.Yes:return
+            subtitle_cache.store(self.items[row]['path'],chosen['index'],path)
+            self.note('Saved English OCR transcript locally. Future analysis will reuse it.')
+            QMessageBox.information(self,'OCR cache','English transcript saved to local OCR cache.')
+        except Exception as exc:
+            QMessageBox.warning(self,'OCR import failed',str(exc))
+    def clear_ocr_cache(self):
+        if QMessageBox.question(self,'Clear cached OCR dialogue',
+                'Delete all locally cached OCR subtitle text? Original MKVs will remain untouched.') != QMessageBox.Yes:return
+        try:
+            n=subtitle_cache.clear()
+            QMessageBox.information(self,'OCR cache cleared',f'Deleted {n} cached subtitle files.')
+        except OSError as exc:
+            QMessageBox.warning(self,'Cache deletion failed',str(exc))
     def subtitle_button_busy(self,busy):
         if hasattr(self,'subtitle_button'):self.subtitle_button.setEnabled(not busy)
     def subtitle_done(self,report,error):
         self.subtitle_button_busy(False)
+        self.status.setText('Ready')
         if error:
             QMessageBox.warning(self,'Subtitle analysis failed',error);self.note('Subtitle analysis failed.');return
         row=self.subtitle_row
@@ -269,8 +305,11 @@ class Main(QMainWindow):
         lines=[report['status'],'',f'Embedded subtitle streams: {len(report["tracks"])}']
         if 'online_reference_status' in report:
             lines.extend(['Online subtitle reference search:',report['online_reference_status'],''])
+            for attempt in report.get('online_reference_attempts',[]):
+                lines.append(' - '+attempt)
         if 'ocr_status' in report:
-            lines.extend(['Image subtitle OCR:',report['ocr_status'],''])
+            lines.extend(['Image subtitle OCR:',report['ocr_status'],
+                          'OCR dialogue cues: '+str(report.get('ocr_cue_count',0)),''])
         for track in report['tracks']:
             lines.append(f'Stream {track["index"]}: {track["language"]} / {track["codec"]} — {track["status"]} '
                          f'({track.get("cue_count",0)} dialogue cues)')

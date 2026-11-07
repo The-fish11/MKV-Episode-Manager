@@ -18,22 +18,14 @@ MAX_DOWNLOAD = 15 * 1024 * 1024
 MAX_UNPACKED = 20 * 1024 * 1024
 EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa", ".txt"}
 
-def search(api_key, title, kind, season=None, tmdb_id=None):
-    """Search SubDL by title and optional TMDB ID/season, never filename."""
-    if not api_key.strip():
-        raise ValueError("Enter your own SubDL API key to fetch reference subtitles")
-    if not title.strip():
-        raise ValueError("Enter the movie or series title printed on the DVD")
-    if kind not in {"movie", "tv"}:
-        raise ValueError("Invalid media type")
-    parameters = {
-        "api_key": api_key.strip(), "film_name": title.strip(),
-        "type": kind, "languages": "EN", "subs_per_page": 30,
-        "unpack": 1,
-    }
-    if tmdb_id:
-        # Prefer selected TMDB identity over ambiguous title, for better candidate selection.
-        parameters.pop("film_name")
+def _search_once(api_key, title, kind, season=None, tmdb_id=None):
+    """Return metadata and raw subtitle results, without hiding empty responses."""
+    parameters = {"api_key": api_key.strip(), "type": kind,
+                  "languages": "EN", "subs_per_page": 30, "unpack": 1,
+                  "client": "custom_integration"}
+    if tmdb_id is None:
+        parameters["film_name"] = title.strip()
+    else:
         parameters["tmdb_id"] = int(tmdb_id)
     if kind == "tv" and season is not None:
         parameters["season_number"] = int(season)
@@ -42,18 +34,65 @@ def search(api_key, title, kind, season=None, tmdb_id=None):
                                                "User-Agent": "MKVEpisodeManager/0.4.2"})
     try:
         with urllib.request.urlopen(req, timeout=20) as response:
-            data = response.read(2 * 1024 * 1024 + 1)
+            payload = response.read(2 * 1024 * 1024 + 1)
     except Exception:
-        raise RuntimeError("SubDL search failed. Check internet access, credentials and provider availability.") from None
-    if len(data) > 2 * 1024 * 1024:
-        raise RuntimeError("SubDL search response exceeded size limit")
+        raise RuntimeError("SubDL request failed (network, quota or provider error). Verify internet and key.") from None
+    if len(payload) > 2 * 1024 * 1024:
+        raise RuntimeError("SubDL search response exceeds size limit")
     try:
-        obj = json.loads(data)
+        obj = json.loads(payload)
     except ValueError:
-        raise RuntimeError("SubDL returned an invalid search response") from None
-    if obj.get("status") is False:
-        raise RuntimeError("SubDL rejected the search. Check your API key and search terms.")
-    return obj.get("subtitles", [])[:30]
+        raise RuntimeError("SubDL returned invalid JSON") from None
+    if not isinstance(obj, dict):
+        raise RuntimeError("SubDL response is not an object")
+    if obj.get("status") is not True:
+        # Provider errors should be distinguishable from zero search results.
+        # Do not echo arbitrary provider text: it could include supplied credentials.
+        raise RuntimeError("SubDL rejected the search; check API key and account quota.")
+    results = obj.get("results") or []
+    subtitles = obj.get("subtitles") or []
+    if not isinstance(results, list) or not isinstance(subtitles, list):
+        raise RuntimeError("Unexpected SubDL response shape")
+    return {"results": results, "subtitles": subtitles[:30]}
+
+def search_with_diagnostics(api_key, title, kind, season=None, tmdb_id=None):
+    """Prefer exact selected TMDB ID, then retry with DVD-cover title on zero results."""
+    if not api_key.strip():
+        raise ValueError("Enter your own SubDL API key")
+    if not title.strip():
+        raise ValueError("Enter the movie/series name from its DVD cover")
+    if kind not in {"movie", "tv"}:
+        raise ValueError("Invalid media type")
+    attempts = []
+    if tmdb_id:
+        attempts.append(("TMDB ID", tmdb_id))
+    attempts.append(("DVD-cover title", None))
+    summary = []
+    last = {"results": [], "subtitles": []}
+    for label, identifier in attempts:
+        try:
+            found = _search_once(api_key, title, kind, season, identifier)
+        except RuntimeError as exc:
+            summary.append(label + ": provider error")
+            # No silent fallback when exact identity was rejected: attempt cover-title search.
+            if label == "DVD-cover title":
+                return {"subtitles": [], "results": [], "status": str(exc),
+                        "attempts": summary}
+            continue
+        last = found
+        summary.append(label + ": " + str(len(found["results"])) + " titles, " +
+                       str(len(found["subtitles"])) + " subtitle listings")
+        if found["subtitles"]:
+            return {**found, "attempts": summary, "status": "Listings found"}
+    status = ("SubDL returned no English subtitle listings for the selected title/season"
+              if not last["subtitles"] else "Listings found")
+    if all("provider error" in x for x in summary):
+        status = "SubDL search failed; check API key, quota or connection"
+    return {**last, "status": status, "attempts": summary}
+
+def search(api_key, title, kind, season=None, tmdb_id=None):
+    """Compatible list-returning search API for earlier integrations."""
+    return search_with_diagnostics(api_key, title, kind, season, tmdb_id)["subtitles"]
 
 def _download(path):
     """Allow only provider-relative paths from SubDL, never arbitrary URLs."""
@@ -116,7 +155,8 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
     root = Path(destination)
     if not root.is_dir():
         raise ValueError("Temporary reference folder does not exist")
-    results = search(api_key, title, kind, season=season, tmdb_id=tmdb_id)
+    diagnosis = search_with_diagnostics(api_key, title, kind, season=season, tmdb_id=tmdb_id)
+    results = diagnosis["subtitles"]
     saved = []
     used = set()
     # TV: prefer separately indexed episode files from season packs.
@@ -144,4 +184,5 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
             continue
         if len(used) >= 25:
             break
-    return saved
+    return {"files": saved, "listing_count": len(results),
+            "attempts": diagnosis["attempts"], "status": diagnosis["status"]}

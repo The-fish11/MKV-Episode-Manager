@@ -1,153 +1,73 @@
-"""Safety-focused, GUI-independent project and copy utilities."""
-import hashlib
-import json
-import os
-import re
-import shutil
-import subprocess
-import tempfile
-import time
+import hashlib,json,os,re,shutil,subprocess,tempfile,time
 from pathlib import Path
 
-APP_VERSION = '0.4.0-test'
-MODES = ('Complete TV Season', 'Incomplete TV Season', 'Movie')
-BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-
-def clean_name(text):
-    return BAD_CHARS.sub('_', str(text)).strip(' .')[:180]
-
-def sha256(path, block=4 * 1024 * 1024):
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(block), b''):
-            h.update(chunk)
+MODES=('Complete TV Season','Incomplete TV Season','Movie')
+BAD=re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+def clean(s):return BAD.sub('_',str(s)).strip(' .')[:170]
+def suggest(item,mode,series,season):
+    if mode=='Movie':
+        title=clean(item.get('title') or series);year=str(item.get('year') or '').strip()
+        return f'{title} ({year}).mkv' if title and re.fullmatch(r'\d{4}',year) else (f'{title}.mkv' if title else '')
+    try: n=int(item.get('episode')); s=int(season)
+    except (ValueError,TypeError):return ''
+    if n<1 or s<0 or not clean(series):return ''
+    title=clean(item.get('title') or '')
+    return f'{clean(series)} - S{s:02d}E{n:02d}'+(f' - {title}' if title else '')+'.mkv'
+def digest(path):
+    h=hashlib.sha256()
+    with open(path,'rb') as f:
+        for chunk in iter(lambda:f.read(4*1024*1024),b''):h.update(chunk)
     return h.hexdigest()
-
+def validate_destination(paths,destination):
+    d=Path(destination)
+    if d.is_symlink() or not d.is_dir():raise ValueError('Select an existing, non-symlink output directory')
+    d=d.resolve(strict=True)
+    if not paths:raise ValueError('No sources')
+    sources=[Path(p) for p in paths]
+    if any(p.is_symlink() or not p.is_file() for p in sources):raise ValueError('Source missing or symlinked')
+    sources=[p.resolve(strict=True) for p in sources]
+    common=Path(os.path.commonpath([str(p.parent) for p in sources]))
+    if d==common or common in d.parents or d in common.parents:raise ValueError('Output must be separate from the source tree')
+    return d
+def verified_copy(src,directory,name):
+    source=Path(src)
+    if source.is_symlink() or not source.is_file():raise ValueError('Invalid source')
+    source=source.resolve(strict=True)
+    directory=Path(directory).resolve(strict=True)
+    if name!=clean(name) or not name.lower().endswith('.mkv') or not name:raise ValueError('Invalid filename')
+    target=directory/name;partial=directory/(name+'.part')
+    if target.exists() or target.is_symlink():raise FileExistsError(str(target))
+    with open(source,'rb') as inp,open(partial,'xb') as out:
+        shutil.copyfileobj(inp,out,4*1024*1024);out.flush();os.fsync(out.fileno())
+    a=digest(source);b=digest(partial)
+    if a!=b:raise IOError('SHA-256 mismatch; .part retained')
+    # Link is an atomic, no-overwrite destination claim on the same filesystem.
+    os.link(partial,target);partial.unlink()
+    return {'source':str(source),'destination':str(target),'sha256':a,'verified':True}
 def inspect(path):
-    p = Path(path)
-    data = {'size_bytes': p.stat().st_size, 'duration_seconds': None,
-            'video_codec': None, 'width': None, 'height': None,
-            'audio_tracks': 0, 'subtitle_tracks': 0, 'inspection_error': None}
+    data={'size_bytes':Path(path).stat().st_size}
     try:
-        proc = subprocess.run(['ffprobe', '-v', 'error', '-show_format', '-show_streams',
-                               '-of', 'json', str(p)], capture_output=True, text=True,
-                              timeout=30, check=True)
-        info = json.loads(proc.stdout)
-        duration = info.get('format', {}).get('duration')
-        data['duration_seconds'] = round(float(duration), 1) if duration else None
-        streams = info.get('streams', [])
-        video = next((s for s in streams if s.get('codec_type') == 'video'), {})
-        data.update(video_codec=video.get('codec_name'), width=video.get('width'),
-                    height=video.get('height'),
-                    audio_tracks=sum(s.get('codec_type') == 'audio' for s in streams),
-                    subtitle_tracks=sum(s.get('codec_type') == 'subtitle' for s in streams))
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired,
-            ValueError, json.JSONDecodeError) as e:
-        data['inspection_error'] = str(e)
+        p=subprocess.run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(path)],capture_output=True,text=True,timeout=35,check=True)
+        obj=json.loads(p.stdout);streams=obj.get('streams',[]);v=next((s for s in streams if s.get('codec_type')=='video'),{})
+        data.update(codec=v.get('codec_name'),width=v.get('width'),height=v.get('height'),duration=round(float(obj.get('format',{}).get('duration',0)),1),audio=sum(s.get('codec_type')=='audio' for s in streams),subtitles=sum(s.get('codec_type')=='subtitle' for s in streams))
+    except Exception as e:data['error']=str(e)
     return data
+def frames(path,folder,count=6):
+    """Frames from relative timestamps; no modification of source."""
+    info=inspect(path);duration=info.get('duration',0);result=[]
+    if duration<=0:raise RuntimeError('FFprobe could not read video duration')
+    for i in range(count):
+        at=max(1,duration*(i+1)/(count+1));out=Path(folder)/f'frame_{i:02}.jpg'
+        p=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-ss',str(at),'-i',str(path),'-frames:v','1','-y',str(out)],capture_output=True,text=True,timeout=45)
+        if p.returncode==0 and out.exists():result.append((str(out),int(at)))
+    if not result:raise RuntimeError('FFmpeg could not extract any frames')
+    return result
 
-def thumbnail(path, output):
-    subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin',
-                    '-ss', '00:03:00', '-i', str(path), '-frames:v', '1', '-y',
-                    str(output)], check=True, timeout=45)
-    return output
-
-def suggested_name(item, mode, series, season):
-    if mode == 'Movie':
-        title = clean_name(item.get('title') or series)
-        year = str(item.get('year', '')).strip()
-        return f'{title} ({year}).mkv' if title and re.fullmatch(r'\d{4}', year) else (f'{title}.mkv' if title else '')
-    number = item.get('episode')
+def save(path,data):
+    dest=Path(path);dest.parent.mkdir(parents=True,exist_ok=True)
+    fd,tmp=tempfile.mkstemp(prefix='.mkv_',suffix='.tmp',dir=dest.parent)
     try:
-        ep = int(number)
-        s = int(season)
-        if ep < 1 or s < 0: return ''
-    except (ValueError, TypeError):
-        return ''
-    title = clean_name(item.get('title', ''))
-    show = clean_name(series)
-    if not show: return ''
-    return f'{show} - S{s:02d}E{ep:02d}' + (f' - {title}' if title else '') + '.mkv'
-
-def ensure_safe_destination(source_paths, destination):
-    dest = Path(destination).resolve()
-    if not dest.is_dir(): raise ValueError('Destination must be an existing directory.')
-    if dest.is_symlink(): raise ValueError('Symlink destination not allowed.')
-    if not source_paths: raise ValueError('No source files.')
-    for source in source_paths:
-        p = Path(source).resolve(strict=True)
-        if p.is_symlink(): raise ValueError('Symlink source not allowed.')
-        if dest == p.parent or dest in p.parents:
-            raise ValueError('Destination cannot be the source directory or one of its parents.')
-        if p.parent == dest or p in dest.parents:
-            raise ValueError('Destination cannot be inside the source file tree.')
-        # Reject a destination inside the imported source folder (which may be a common parent).
-    common = Path(os.path.commonpath([str(Path(x).resolve().parent) for x in source_paths]))
-    if dest == common or common in dest.parents:
-        raise ValueError('Destination must not be inside the imported source folder.')
-    return dest
-
-def verified_copy(source, dest_folder, filename):
-    """Never overwrite, copy to exclusive .part, verify, then reserve final name exclusively."""
-    source = Path(source).resolve(strict=True)
-    dest_folder = Path(dest_folder).resolve(strict=True)
-    if not source.is_file() or source.is_symlink(): raise ValueError('Invalid source.')
-    if filename != clean_name(filename) or not filename.lower().endswith('.mkv'):
-        raise ValueError('Unsafe output filename.')
-    if filename in ('.', '..'): raise ValueError('Invalid output filename.')
-    target = dest_folder / filename
-    if target.exists() or target.is_symlink(): raise FileExistsError(f'Destination already exists: {target}')
-    temp = dest_folder / (filename + '.part')
-    # Exclusive creation ensures no existing partial transfer is overwritten.
-    try:
-        with open(source, 'rb') as inp, open(temp, 'xb') as out:
-            shutil.copyfileobj(inp, out, 4 * 1024 * 1024)
-            out.flush()
-            os.fsync(out.fileno())
-        source_hash = sha256(source)
-        dest_hash = sha256(temp)
-        if source_hash != dest_hash:
-            raise IOError('SHA-256 mismatch; incomplete copy remains as .part.')
-        # Hard link atomically claims the destination without overwriting; same filesystem.
-        os.link(temp, target)
-        temp.unlink()
-        return {'source': str(source), 'destination': str(target),
-                'sha256': source_hash, 'bytes': target.stat().st_size, 'verified': True}
-    except Exception:
-        # Leave any partial copy in place for diagnosis; never touch source.
-        raise
-
-def save_project(path, project):
-    p = Path(path)
-    payload = {'version': APP_VERSION, 'saved_at': time.strftime('%Y-%m-%dT%H:%M:%S'), **project}
-    with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=p.parent,
-                                     prefix='.mkv_project_', suffix='.tmp', delete=False) as f:
-        tmp = Path(f.name)
-        json.dump(payload, f, indent=2)
-        f.flush(); os.fsync(f.fileno())
-    os.replace(tmp, p)
-
-def load_project(path):
-    with open(path, encoding='utf-8') as f: data = json.load(f)
-    if data.get('mode') not in MODES: raise ValueError('Unknown project mode')
-    return data
-
-def duplicates(items):
-    found, dup = {}, []
-    for i, item in enumerate(items):
-        p = item['path']
-        h = sha256(p)
-        if h in found: dup.append((found[h], i))
-        else: found[h] = i
-    return dup
-
-def missing_episodes(items, mode):
-    if mode != 'Complete TV Season': return []
-    numbers = set()
-    for item in items:
-        try:
-            n = int(item.get('episode', ''))
-            if n > 0: numbers.add(n)
-        except (ValueError, TypeError): pass
-    if not numbers: return []
-    return sorted(set(range(1, max(numbers) + 1)) - numbers)
+        with os.fdopen(fd,'w',encoding='utf8') as f:json.dump({'version':'0.4.1',**data},f,indent=2);f.flush();os.fsync(f.fileno())
+        os.replace(tmp,dest)
+    finally:
+        if os.path.exists(tmp):os.unlink(tmp)

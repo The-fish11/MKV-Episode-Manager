@@ -240,5 +240,5 @@ def analyse_file(mkv, references_dir=None, online=None):
     elif any(t.get("status") == "Text extracted" for t in report["tracks"]):
         report["status"] = "Dialogue extracted; no supported reference match"
     elif any(t["needs_ocr"] for t in report["tracks"]):
-        report["status"] = "Image-based subtitles detected; OCR not yet available"
+        report["status"] = "Image subtitles detected; see OCR status and reference-match evidence"
     return report

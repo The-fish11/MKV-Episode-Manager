@@ -24,9 +24,9 @@ def test_lines():
 
 class SubtitleTests(unittest.TestCase):
     def test_srt_parsing_strips_index_time_and_html(self):
-        text = ("1\\n00:00:01,100 --> 00:00:04,300\\n"
-                "<i>The following morning we traveled toward the mountains before sunrise</i>\\n\\n"
-                "2\\n00:00:05,100 --> 00:00:07,500\\n[Music]\\n"
+        text = ("1\n00:00:01,100 --> 00:00:04,300\n"
+                "<i>The following morning we traveled toward the mountains before sunrise</i>\n\n"
+                "2\n00:00:05,100 --> 00:00:07,500\n[Music]\n"
                 "A storm was approaching and the wooden door refused to close")
         cues = subtitle_match.cues(text)
         self.assertEqual(len(cues), 2)
@@ -34,9 +34,9 @@ class SubtitleTests(unittest.TestCase):
         self.assertNotIn("00", cues[0])
 
     def test_vtt_and_ass(self):
-        vtt = "WEBVTT\\n\\n00:00:01.000 --> 00:00:03.500\\nA storm was approaching and the wooden door refused to close"
+        vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:03.500\nA storm was approaching and the wooden door refused to close"
         self.assertEqual(len(subtitle_match.cues(vtt, ".vtt")), 1)
-        ass = ("[Events]\\n"
+        ass = ("[Events]\n"
                "Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,"
                "{\\\\i1}Nobody remembered who had hidden the silver key beneath the staircase")
         self.assertEqual(len(subtitle_match.cues(ass, ".ass")), 1)
@@ -61,8 +61,8 @@ class SubtitleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
             def write(name, lines):
-                content = "\\n\\n".join(
-                    f"{i}\\n00:00:{i:02},000 --> 00:00:{i:02},900\\n{line}"
+                content = "\n\n".join(
+                    f"{i}\n00:00:{i:02},000 --> 00:00:{i:02},900\n{line}"
                     for i, line in enumerate(lines))
                 (p / name).write_text(content, encoding="utf-8")
             write("correct.srt", test_lines())

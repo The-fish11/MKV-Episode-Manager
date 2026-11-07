@@ -202,9 +202,9 @@ class Main(QMainWindow):
         row=self.row()
         if row is None:return
         QMessageBox.information(self,'Subtitle identification',
-            'The application will inspect the embedded subtitle tracks.\\n\\n'
+            'The application will inspect the embedded subtitle tracks.\n\n'
             'For dialogue comparison, choose a local folder with known reference subtitles '
-            '(.srt, .vtt, .ass, .ssa or .txt).\\n\\n'
+            '(.srt, .vtt, .ass, .ssa or .txt).\n\n'
             'Press Cancel in the folder chooser to inspect subtitle tracks without references. '
             'DVD VobSub and Blu-ray PGS are image subtitles and require OCR, which is not yet implemented. '
             'No source MKV will be changed.')
@@ -237,7 +237,7 @@ class Main(QMainWindow):
         else:lines.extend(['','No supported content match. Movie/episode is unverified.'])
         lines.append('')
         lines.append('Candidate matches require your review. No filename has been approved automatically.')
-        QMessageBox.information(self,'Subtitle analysis results','\\n'.join(lines))
+        QMessageBox.information(self,'Subtitle analysis results','\n'.join(lines))
         self.note(f'Subtitle analysis: {Path(self.items[row]["path"]).name}: {report["status"]}')
     def save_project(self):
         path,_=QFileDialog.getSaveFileName(self,'Save project','','MKV project (*.json)')

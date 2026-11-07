@@ -71,7 +71,7 @@ def clear(destination_root=None):
         return 0
     count = 0
     for file in root.iterdir():
-        if file.is_file() and not file.is_symlink() and re.fullmatch(r"[0-9a-f]{64}\\.srt", file.name):
+        if file.is_file() and not file.is_symlink() and re.fullmatch(r"[0-9a-f]{64}\.srt", file.name):
             file.unlink()
             count += 1
     return count

@@ -46,9 +46,9 @@ class OnlineSubtitleTests(unittest.TestCase):
             self.assertFalse((Path(temp).parent / "danger.srt").exists())
 
     @patch("online_subtitles._download", return_value=b"1\\n00:00:01,000 --> 00:00:02,000\\nDistinctive dialogue from the film\\n")
-    @patch("online_subtitles.search")
+    @patch("online_subtitles.search_with_diagnostics")
     def test_season_pack_expands_episodes(self, search, download):
-        search.return_value = [
+        search.return_value = {"subtitles": [
             {"name": "Season Pack.zip", "season": 1, "full_season": True,
              "unpack_files": [
                 {"name": "Pilot.srt", "episode": 1, "season": 1,
@@ -56,14 +56,14 @@ class OnlineSubtitleTests(unittest.TestCase):
                 {"name": "Second.srt", "episode": 2, "season": 1,
                  "url": "/subtitle/12/file02"}
             ]}
-        ]
+        ], "results": [], "status": "Listings found", "attempts": ["DVD-cover title: listings"]}
         with tempfile.TemporaryDirectory() as temp:
             found = online_subtitles.download_references(
                 "fake-secret", "Blue Bloods", "tv", temp, season=1)
-            self.assertEqual(len(found), 2)
-            self.assertIn("S01E01", found[0].name)
-            self.assertIn("S01E02", found[1].name)
-            self.assertTrue(all(p.is_file() for p in found))
+            self.assertEqual(len(found["files"]), 2)
+            self.assertIn("S01E01", found["files"][0].name)
+            self.assertIn("S01E02", found["files"][1].name)
+            self.assertTrue(all(p.is_file() for p in found["files"]))
 
 
 if __name__ == "__main__":

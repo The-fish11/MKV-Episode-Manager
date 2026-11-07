@@ -5,6 +5,7 @@ files (.srt/.vtt/.ass/.ssa/.txt); no copyrighted subtitles are redistributed.
 Image-based DVD VobSub / Blu-ray PGS streams are flagged for optional future OCR.
 """
 import json
+import subtitle_cache
 import re
 import shutil
 import subprocess
@@ -187,25 +188,42 @@ def ocr_image_subtitles(mkv, folder, tracks=None):
                            "check SeConv track mapping for stream " + str(selected["index"]))
     return files
 
-def analyse_file(mkv, references_dir=None, online=None):
-    """Inventory all streams; extract each supported track in a temporary folder."""
+def analyse_file(mkv, references_dir=None, online=None, progress=None):
+    """Identify subtitle tracks, reuse OCR cache and compare lawful reference material.
+
+    Source MKVs are never written. OCR text is cached locally and can be cleared.
+    Online reference files remain temporary and are NOT persisted.
+    """
+    def notify(message):
+        if progress:
+            progress(message)
+    notify("Inspecting subtitle tracks")
     tracks = probe_subtitles(mkv)
     report = {"source": str(mkv), "tracks": [], "top_matches": [],
-              "status": "No usable text subtitle evidence", "verified": False}
+              "status": "No supported content identification yet", "verified": False}
     with tempfile.TemporaryDirectory(prefix="mkv_subtitles_") as temporary:
         if online:
             import online_subtitles
             online_folder = Path(temporary) / "references"
             online_folder.mkdir()
+            notify("Searching SubDL for reference subtitles")
             try:
-                downloaded = online_subtitles.download_references(
+                response = online_subtitles.download_references(
                     online["key"], online["title"], online["kind"], online_folder,
                     season=online.get("season"), tmdb_id=online.get("tmdb_id"))
                 references_dir = online_folder
-                report["online_reference_count"] = len(downloaded)
-                report["online_reference_status"] = (
-                    str(len(downloaded)) + " online subtitle files retrieved"
-                    if downloaded else "No online subtitle references found")
+                report["online_reference_count"] = len(response["files"])
+                report["online_listing_count"] = response["listing_count"]
+                report["online_reference_attempts"] = response["attempts"]
+                if response["files"]:
+                    report["online_reference_status"] = (
+                        str(len(response["files"])) + " reference file(s) downloaded")
+                elif response["listing_count"]:
+                    report["online_reference_status"] = (
+                        str(response["listing_count"]) +
+                        " listings found, but no downloadable references; check SubDL quota or file format")
+                else:
+                    report["online_reference_status"] = response["status"]
             except (RuntimeError, ValueError) as exc:
                 report["online_reference_count"] = 0
                 report["online_reference_status"] = str(exc)
@@ -215,6 +233,7 @@ def analyse_file(mkv, references_dir=None, online=None):
                 current["status"] = "Image subtitle — OCR needed"
             else:
                 try:
+                    notify("Extracting text subtitle stream " + str(stream["index"]))
                     extracted = extract_text_track(
                         mkv, stream["index"],
                         Path(temporary) / ("subtitle_" + str(stream["index"]) + ".srt"))
@@ -230,28 +249,52 @@ def analyse_file(mkv, references_dir=None, online=None):
                 except RuntimeError:
                     current["status"] = "Text extraction failed"
             report["tracks"].append(current)
-        if any(t.get("needs_ocr") for t in report["tracks"]):
-            ocr_dir = Path(temporary) / "ocr"
+        english = [t for t in report["tracks"] if t.get("needs_ocr") and
+                   t.get("language", "").lower() in ("en", "eng")]
+        if english:
+            selected = next((t for t in english if not t.get("forced")), english[0])
+            stream_id = int(selected["index"])
+            ocr_files = []
             try:
-                ocr_files = ocr_image_subtitles(mkv, ocr_dir, report["tracks"])
-                report["ocr_status"] = str(len(ocr_files)) + " OCR subtitle files produced"
+                cached = None
+                if Path(mkv).is_file():
+                    cached = subtitle_cache.load(mkv, stream_id)
+                if cached is not None:
+                    notify("Reusing saved English OCR transcript")
+                    ocr_files = [cached]
+                    report["ocr_status"] = "Cached English OCR transcript reused — no new OCR"
+                    report["ocr_cached"] = True
+                else:
+                    notify("OCR processing English subtitle stream " +
+                           str(stream_id) + " (may take 10–20 minutes)")
+                    ocr_dir = Path(temporary) / "ocr"
+                    ocr_files = ocr_image_subtitles(mkv, ocr_dir, report["tracks"])
+                    report["ocr_status"] = str(len(ocr_files)) + " English OCR transcript(s) extracted"
+                    report["ocr_cached"] = False
+                    if Path(mkv).is_file() and ocr_files:
+                        subtitle_cache.store(mkv, stream_id, ocr_files[0])
                 for ocr_file in ocr_files:
                     lines = read_reference(ocr_file)
-                    if not lines:
-                        continue
-                    if references_dir:
+                    report["ocr_cue_count"] = len(lines)
+                    if lines and references_dir:
+                        notify("Comparing English dialogue with downloaded references")
                         for match in rank_references(lines, references_dir)[:5]:
                             report["top_matches"].append({
-                                "subtitle_index": None, "language": "eng",
+                                "subtitle_index": stream_id, "language": "eng",
                                 "extraction_method": "OCR", **match})
-            except RuntimeError as exc:
+            except (RuntimeError, ValueError, OSError) as exc:
                 report["ocr_status"] = str(exc)
+        elif any(t.get("needs_ocr") for t in report["tracks"]):
+            report["ocr_status"] = "No English image subtitle track found"
     report["top_matches"].sort(key=lambda m: (m["supported"], m["score"]), reverse=True)
     report["top_matches"] = report["top_matches"][:8]
     if report["top_matches"] and report["top_matches"][0]["supported"]:
-        report["status"] = "Subtitle candidate match found — human review required"
+        report["status"] = "Supported subtitle comparison candidate — manual review required"
+    elif report.get("ocr_cue_count"):
+        report["status"] = "English dialogue available; no supported reference match"
     elif any(t.get("status") == "Text extracted" for t in report["tracks"]):
         report["status"] = "Dialogue extracted; no supported reference match"
-    elif any(t["needs_ocr"] for t in report["tracks"]):
-        report["status"] = "Image subtitles detected; see OCR status and reference-match evidence"
+    elif any(t.get("needs_ocr") for t in report["tracks"]):
+        report["status"] = "Image subtitles detected; see OCR status"
+    notify("Analysis finished")
     return report

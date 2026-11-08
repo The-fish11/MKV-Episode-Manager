@@ -214,6 +214,8 @@ def analyse_file(mkv, references_dir=None, online=None, progress=None):
                 references_dir = online_folder
                 report["online_reference_count"] = len(response["files"])
                 report["online_listing_count"] = response["listing_count"]
+                report["online_download_attempt_count"] = response.get("download_attempt_count", 0)
+                report["online_download_diagnostics"] = response.get("download_diagnostics", {})
                 report["online_reference_attempts"] = response["attempts"]
                 if response["files"]:
                     report["online_reference_status"] = (
@@ -221,7 +223,7 @@ def analyse_file(mkv, references_dir=None, online=None, progress=None):
                 elif response["listing_count"]:
                     report["online_reference_status"] = (
                         str(response["listing_count"]) +
-                        " listings found, but no downloadable references; check SubDL quota or file format")
+                        " listings found, but no downloaded references; see download diagnostics")
                 else:
                     report["online_reference_status"] = response["status"]
             except (RuntimeError, ValueError) as exc:

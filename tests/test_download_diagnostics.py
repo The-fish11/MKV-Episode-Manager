@@ -10,6 +10,27 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import online_subtitles
 
 class DownloadDiagnosticsTests(unittest.TestCase):
+    def test_official_absolute_or_relative_download_link(self):
+        self.assertEqual(
+            online_subtitles._normalise_subdl_url("/subtitle/3197651-3213944.zip"),
+            "https://dl.subdl.com/subtitle/3197651-3213944.zip")
+        self.assertEqual(
+            online_subtitles._normalise_subdl_url(
+                "https://dl.subdl.com/subtitle/3197651-3213944.zip"),
+            "https://dl.subdl.com/subtitle/3197651-3213944.zip")
+        for link in [
+            "https://evil.example/subtitle/123.zip",
+            "http://dl.subdl.com/subtitle/123.zip",
+            "https://dl.subdl.com.evil.example/subtitle/123.zip",
+            "https://dl.subdl.com/subtitle/../other.zip",
+            "https://dl.subdl.com/subtitle/%2e%2e/other.zip",
+            "https://dl.subdl.com/subtitle/123.zip?api_key=secret",
+            "//evil.example/subtitle/123.zip",
+        ]:
+            with self.subTest(link=link), self.assertRaises(ValueError):
+                online_subtitles._normalise_subdl_url(link)
+
+
     @patch("online_subtitles.urllib.request.urlopen",side_effect=urllib.error.HTTPError("redacted",429,"rate limit",{},None))
     def test_http429_is_explained_without_url(self, _):
         with self.assertRaisesRegex(RuntimeError,"HTTP 429"):

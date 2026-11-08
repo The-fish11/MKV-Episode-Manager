@@ -5,7 +5,9 @@ Downloads are temporary and limited; never include API keys in errors or logs.
 The provider requires a user-obtained SubDL API key.
 """
 import io
+import collections
 import json
+import urllib.error
 import re
 import urllib.parse
 import urllib.request
@@ -95,24 +97,33 @@ def search(api_key, title, kind, season=None, tmdb_id=None):
     return search_with_diagnostics(api_key, title, kind, season, tmdb_id)["subtitles"]
 
 def _download(path):
-    """Allow only provider-relative paths from SubDL, never arbitrary URLs."""
+    """Download only SubDL-hosted references, with actionable sanitized failures."""
     if not isinstance(path, str) or not path.startswith("/subtitle/"):
-        raise ValueError("Untrusted subtitle download path")
-    if any(c in path for c in "?#\\"):
-        raise ValueError("Invalid subtitle download path")
-    if not re.fullmatch(r"/subtitle/[a-zA-Z0-9._/-]+", path) or ".." in path:
-        raise ValueError("Invalid subtitle download path")
+        raise ValueError("Invalid provider download URL")
+    if any(c in path for c in "?#\\") or not re.fullmatch(r"/subtitle/[a-zA-Z0-9._/-]+", path) or ".." in path:
+        raise ValueError("Invalid provider download URL")
     url = "https://" + DOWNLOAD_HOST + path
     req = urllib.request.Request(url, headers={"User-Agent": "MKVEpisodeManager/0.4.2"})
     try:
         with urllib.request.urlopen(req, timeout=25) as response:
-            if urllib.parse.urlparse(response.geturl()).hostname != DOWNLOAD_HOST:
-                raise ValueError("Unsafe subtitle download redirect")
+            final = urllib.parse.urlparse(response.geturl())
+            if final.scheme != "https" or final.hostname != DOWNLOAD_HOST:
+                raise ValueError("Redirect outside SubDL download host")
             content = response.read(MAX_DOWNLOAD + 1)
-    except Exception:
-        raise RuntimeError("SubDL subtitle download failed or was blocked") from None
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            raise RuntimeError("HTTP 429: SubDL download rate limit") from None
+        if exc.code in (401, 403):
+            raise RuntimeError("HTTP " + str(exc.code) + ": SubDL download access denied or quota") from None
+        if exc.code == 404:
+            raise RuntimeError("HTTP 404: subtitle reference unavailable") from None
+        raise RuntimeError("HTTP " + str(exc.code) + ": subtitle download rejected") from None
+    except (OSError, urllib.error.URLError):
+        raise RuntimeError("Network error fetching subtitle from SubDL") from None
     if len(content) > MAX_DOWNLOAD:
-        raise ValueError("Subtitle download exceeds safety limit")
+        raise ValueError("Subtitle download exceeded 15 MB size limit")
+    if not content:
+        raise ValueError("Empty subtitle download")
     return content
 
 def _write_reference(folder, prefix, filename, data):
@@ -126,7 +137,8 @@ def _write_reference(folder, prefix, filename, data):
     return [target]
 
 def _save_payload(folder, prefix, name, payload):
-    if not name.lower().endswith(".zip"):
+    # Provider sometimes labels an archive with a generic name; detect ZIP bytes.
+    if not payload.startswith(b"PK\\x03\\x04") and not name.lower().endswith(".zip"):
         return _write_reference(folder, prefix, name, payload)
     try:
         archive = zipfile.ZipFile(io.BytesIO(payload))
@@ -159,30 +171,51 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
     results = diagnosis["subtitles"]
     saved = []
     used = set()
-    # TV: prefer separately indexed episode files from season packs.
+    diagnostics = collections.Counter()
     candidates = []
     for subtitle in results:
-        for unpacked in subtitle.get("unpack_files") or []:
+        # For movies, download the provider's ZIP rather than treating unpack
+        # entries as direct text files, unless only unpack entries are available.
+        if kind == "movie" and subtitle.get("url"):
+            candidates.append((subtitle.get("url"), subtitle.get("name") or "reference.zip", 0, 0))
+            continue
+        unpacked = subtitle.get("unpack_files") or []
+        for entry in unpacked:
             candidates.append((
-                unpacked.get("url"), unpacked.get("name") or "reference.srt",
-                unpacked.get("season", subtitle.get("season")),
-                unpacked.get("episode", subtitle.get("episode")),
-            ))
-        if not subtitle.get("unpack_files"):
+                entry.get("url"), entry.get("name") or "reference.srt",
+                entry.get("season", subtitle.get("season")),
+                entry.get("episode", subtitle.get("episode"))))
+        if not unpacked and subtitle.get("url"):
             candidates.append((subtitle.get("url"), subtitle.get("name") or "reference.zip",
                                subtitle.get("season"), subtitle.get("episode")))
-    for path, name, s, e in candidates:
-        if not path or path in used or len(saved) >= 90:
+    for path, name, season_number, episode_number in candidates:
+        if len(used) >= 15 or len(saved) >= 60:
+            break
+        if not path:
+            diagnostics["Missing provider download links"] += 1
+            continue
+        if path in used:
             continue
         used.add(path)
-        prefix = "S{:02d}E{:02d}".format(int(s or 0), int(e or 0)) if kind == "tv" else "movie"
-        prefix = prefix + "_" + str(len(used)).zfill(3)
+        prefix = ("S{:02d}E{:02d}".format(int(season_number or 0), int(episode_number or 0))
+                  if kind == "tv" else "movie")
+        prefix += "_" + str(len(used)).zfill(3)
         try:
             payload = _download(path)
-            saved.extend(_save_payload(root, prefix, name, payload))
-        except (ValueError, OSError, RuntimeError, zipfile.BadZipFile):
-            continue
-        if len(used) >= 25:
-            break
+            files = _save_payload(root, prefix, name, payload)
+            if files:
+                saved.extend(files)
+                diagnostics["Downloaded"] += len(files)
+            else:
+                diagnostics["Unsupported or invalid subtitle archive"] += 1
+        except (ValueError, OSError, RuntimeError, zipfile.BadZipFile) as exc:
+            # Never include URLs, API credentials or raw provider content.
+            label = str(exc)
+            if label.startswith(("HTTP ", "Invalid provider", "Redirect outside", "Network error",
+                                 "Subtitle download exceeded", "Empty subtitle")):
+                diagnostics[label] += 1
+            else:
+                diagnostics["Subtitle retrieval error"] += 1
     return {"files": saved, "listing_count": len(results),
-            "attempts": diagnosis["attempts"], "status": diagnosis["status"]}
+            "attempts": diagnosis["attempts"], "status": diagnosis["status"],
+            "download_attempt_count": len(used), "download_diagnostics": dict(diagnostics)}

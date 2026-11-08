@@ -96,18 +96,39 @@ def search(api_key, title, kind, season=None, tmdb_id=None):
     """Compatible list-returning search API for earlier integrations."""
     return search_with_diagnostics(api_key, title, kind, season, tmdb_id)["subtitles"]
 
+def _normalise_subdl_url(path):
+    """Accept provider relative paths or exact HTTPS URLs for dl.subdl.com only.
+
+    The SubDL API documents paths such as /subtitle/123-456.zip. Some client
+    responses may supply already-qualified HTTPS download links. Reject all
+    other schemes/hosts, credentials, query strings, fragments and traversal.
+    """
+    if not isinstance(path, str):
+        raise ValueError("Invalid provider download URL")
+    if path.startswith("/subtitle/"):
+        path = "https://" + DOWNLOAD_HOST + path
+    parsed = urllib.parse.urlsplit(path)
+    if (parsed.scheme != "https" or parsed.netloc != DOWNLOAD_HOST or
+            parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError("Invalid provider download URL")
+    if (not re.fullmatch(r"/subtitle/[a-zA-Z0-9._~%-/]+", parsed.path)
+            or "\\" in parsed.path):
+        raise ValueError("Invalid provider download URL")
+    decoded = urllib.parse.unquote(parsed.path)
+    if not re.fullmatch(r"/subtitle/[a-zA-Z0-9._~/-]+", decoded):
+        raise ValueError("Invalid provider download URL")
+    if any(part in (".", "..") for part in decoded.split("/")):
+        raise ValueError("Invalid provider download URL")
+    return urllib.parse.urlunsplit(("https", DOWNLOAD_HOST, parsed.path, "", ""))
+
 def _download(path):
-    """Download only SubDL-hosted references, with actionable sanitized failures."""
-    if not isinstance(path, str) or not path.startswith("/subtitle/"):
-        raise ValueError("Invalid provider download URL")
-    if any(c in path for c in "?#\\") or not re.fullmatch(r"/subtitle/[a-zA-Z0-9._/-]+", path) or ".." in path:
-        raise ValueError("Invalid provider download URL")
-    url = "https://" + DOWNLOAD_HOST + path
+    """Download only HTTPS references from the official SubDL host."""
+    url = _normalise_subdl_url(path)
     req = urllib.request.Request(url, headers={"User-Agent": "MKVEpisodeManager/0.4.2"})
     try:
         with urllib.request.urlopen(req, timeout=25) as response:
-            final = urllib.parse.urlparse(response.geturl())
-            if final.scheme != "https" or final.hostname != DOWNLOAD_HOST:
+            final = urllib.parse.urlsplit(response.geturl())
+            if final.scheme != "https" or final.netloc != DOWNLOAD_HOST:
                 raise ValueError("Redirect outside SubDL download host")
             content = response.read(MAX_DOWNLOAD + 1)
     except urllib.error.HTTPError as exc:

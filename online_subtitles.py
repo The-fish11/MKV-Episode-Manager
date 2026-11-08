@@ -111,7 +111,7 @@ def _normalise_subdl_url(path):
     if (parsed.scheme != "https" or parsed.netloc != DOWNLOAD_HOST or
             parsed.username or parsed.password or parsed.query or parsed.fragment):
         raise ValueError("Invalid provider download URL")
-    if (not re.fullmatch(r"/subtitle/[a-zA-Z0-9._~%-/]+", parsed.path)
+    if (not re.fullmatch(r"/subtitle/[a-zA-Z0-9._~%/-]+", parsed.path)
             or "\\" in parsed.path):
         raise ValueError("Invalid provider download URL")
     decoded = urllib.parse.unquote(parsed.path)

@@ -307,6 +307,10 @@ class Main(QMainWindow):
             lines.extend(['Online subtitle reference search:',report['online_reference_status'],''])
             for attempt in report.get('online_reference_attempts',[]):
                 lines.append(' - '+attempt)
+            if 'online_download_attempt_count' in report:
+                lines.append('Reference downloads attempted: '+str(report['online_download_attempt_count']))
+                for reason,count in sorted(report.get('online_download_diagnostics',{}).items()):
+                    lines.append(' - '+str(count)+' × '+reason)
         if 'ocr_status' in report:
             lines.extend(['Image subtitle OCR:',report['ocr_status'],
                           'OCR dialogue cues: '+str(report.get('ocr_cue_count',0)),''])

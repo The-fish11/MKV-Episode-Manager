@@ -97,28 +97,30 @@ def search(api_key, title, kind, season=None, tmdb_id=None):
     return search_with_diagnostics(api_key, title, kind, season, tmdb_id)["subtitles"]
 
 def _normalise_subdl_url(path):
-    """Accept provider relative paths or exact HTTPS URLs for dl.subdl.com only.
-
-    The SubDL API documents paths such as /subtitle/123-456.zip. Some client
-    responses may supply already-qualified HTTPS download links. Reject all
-    other schemes/hosts, credentials, query strings, fragments and traversal.
-    """
-    if not isinstance(path, str):
-        raise ValueError("Invalid provider download URL")
+    """Only permit known SubDL HTTPS download links; errors disclose format, not URL."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("Invalid provider URL: missing or non-text link")
+    path = path.strip()
     if path.startswith("/subtitle/"):
         path = "https://" + DOWNLOAD_HOST + path
+    elif path.startswith("//" ):
+        raise ValueError("Invalid provider URL: protocol-relative URL")
     parsed = urllib.parse.urlsplit(path)
-    if (parsed.scheme != "https" or parsed.netloc != DOWNLOAD_HOST or
-            parsed.username or parsed.password or parsed.query or parsed.fragment):
-        raise ValueError("Invalid provider download URL")
-    if (not re.fullmatch(r"/subtitle/[a-zA-Z0-9._~%/-]+", parsed.path)
-            or "\\" in parsed.path):
-        raise ValueError("Invalid provider download URL")
+    if parsed.scheme != "https":
+        raise ValueError("Invalid provider URL: unexpected scheme")
+    if parsed.hostname != DOWNLOAD_HOST or parsed.username or parsed.password or parsed.port:
+        raise ValueError("Invalid provider URL: unexpected host")
+    if parsed.query or parsed.fragment:
+        raise ValueError("Invalid provider URL: unexpected query/fragment")
+    if "\\" in parsed.path:
+        raise ValueError("Invalid provider URL: invalid path separator")
     decoded = urllib.parse.unquote(parsed.path)
+    if not decoded.startswith("/subtitle/"):
+        raise ValueError("Invalid provider URL: unexpected download path")
     if not re.fullmatch(r"/subtitle/[a-zA-Z0-9._~/-]+", decoded):
-        raise ValueError("Invalid provider download URL")
-    if any(part in (".", "..") for part in decoded.split("/")):
-        raise ValueError("Invalid provider download URL")
+        raise ValueError("Invalid provider URL: unsupported path characters")
+    if any(segment in ("", ".", "..") for segment in decoded.split("/")[2:]):
+        raise ValueError("Invalid provider URL: unsafe path")
     return urllib.parse.urlunsplit(("https", DOWNLOAD_HOST, parsed.path, "", ""))
 
 def _download(path):

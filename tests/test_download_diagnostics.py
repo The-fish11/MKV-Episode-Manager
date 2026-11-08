@@ -31,6 +31,17 @@ class DownloadDiagnosticsTests(unittest.TestCase):
                 online_subtitles._normalise_subdl_url(link)
 
 
+    def test_format_diagnostics_are_safe(self):
+        for link,expected in [
+            ("https://example.org/subtitle/abc.zip","unexpected host"),
+            ("http://dl.subdl.com/subtitle/abc.zip","unexpected scheme"),
+            ("https://dl.subdl.com/other/abc.zip","unexpected download path"),
+            ("https://dl.subdl.com/subtitle/abc.zip?key=secret","unexpected query/fragment")
+        ]:
+            with self.subTest(expected=expected), self.assertRaisesRegex(ValueError,expected) as ctx:
+                online_subtitles._normalise_subdl_url(link)
+            self.assertNotIn("secret",str(ctx.exception))
+
     @patch("online_subtitles.urllib.request.urlopen",side_effect=urllib.error.HTTPError("redacted",429,"rate limit",{},None))
     def test_http429_is_explained_without_url(self, _):
         with self.assertRaisesRegex(RuntimeError,"HTTP 429"):

@@ -45,7 +45,7 @@ class PosterWorker(QThread):
         for i,path in enumerate(self.poster_paths):
             if self.isInterruptionRequested():return
             # Never accept arbitrary URLs from API data.
-            if not isinstance(path,str) or not re.fullmatch(r"/[A-Za-z0-9_-]+\\.(?:jpg|jpeg|png)",path,re.I):
+            if not isinstance(path,str) or not re.fullmatch(r"/[A-Za-z0-9_-]+\.(?:jpg|jpeg|png)",path,re.I):
                 continue
             try:
                 req=urllib.request.Request('https://image.tmdb.org/t/p/w92'+path,
@@ -110,7 +110,7 @@ class SearchDialog(QDialog):
             title=candidate.get('title') or candidate.get('name') or 'Untitled'
             date=candidate.get('release_date') or candidate.get('first_air_date') or ''
             overview=(candidate.get('overview') or 'No synopsis available')[:135]
-            entry=QListWidgetItem(f'{title}  ({date[:4] or "Year unknown"})\\n{overview}')
+            entry=QListWidgetItem(f'{title}  ({date[:4] or "Year unknown"})\n{overview}')
             entry.setData(Qt.UserRole,candidate)
             entry.setSizeHint(QSize(100,122))
             self.results.addItem(entry)

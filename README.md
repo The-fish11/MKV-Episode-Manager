@@ -47,7 +47,7 @@ The following table lists the tools actually used by the application or its v0.4
 
 ## What works in the v0.4.2 development build
 
-- Import MakeMKV files with generic names such as `title_t00.mkv`. Set **Movie** or a TV season mode and enter the movie/series title from the DVD cover. Don't assume generic filenames identify their contents.
+- Import MakeMKV files with generic names such as `C1_t00.mkv` or `title_t00.mkv`. **The app never guesses the movie/series title from an imported MKV filename.** The title field stays blank unless you already entered a title yourself. Choose **Movie** or a TV season mode, enter the title printed on the disc cover (for TV, select the season), and use TMDB to confirm the correct title. Imported filenames remain unchanged.
 - **TMDB search**: retrieve movie/series candidates and metadata. **These are possible titles, not verified video matches**. Choose the correct item yourself.
 - **Video inspection and six-frame gallery**: FFmpeg/FFprobe examine source files read-only. Automatic scene-to-reference recognition is **not yet implemented**.
 - **Analyse subtitles**: FFprobe inventories tracks; FFmpeg extracts supported embedded text subtitles; **SeConv + Tesseract** can attempt OCR on English image-based DVD subtitles (experimental). The first OCR run can take more than ten minutes.

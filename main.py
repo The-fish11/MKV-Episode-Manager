@@ -1,7 +1,7 @@
-import json,os,sys,tempfile,urllib.request
+import json,os,re,sys,tempfile,urllib.request
 from pathlib import Path
-from PySide6.QtCore import Qt,QThread,Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt,QThread,Signal,QSize
+from PySide6.QtGui import QPixmap,QIcon
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QPushButton,QComboBox,QSpinBox,QTableWidget,QTableWidgetItem,QHeaderView,QFileDialog,QMessageBox,QDialog,QListWidget,QListWidgetItem,QGridLayout,QScrollArea,QTextEdit,QProgressBar,QCheckBox,QGroupBox)
 import core,metadata,subtitle_match,subtitle_cache
 CSS='''QWidget{background:#101827;color:#e8eef8;font:10pt "Segoe UI"}QPushButton{background:#263952;border:1px solid #39526d;border-radius:8px;padding:9px}QPushButton:hover{background:#345479}QPushButton#primary{background:#2879ed;color:white}QLineEdit,QComboBox,QSpinBox,QTableWidget,QTextEdit,QListWidget{background:#192638;border:1px solid #334862;border-radius:7px;padding:6px}QHeaderView::section{background:#253851;color:#fff;padding:8px;border:0}QGroupBox{border:1px solid #34465d;border-radius:10px;margin-top:10px;padding:12px}QGroupBox::title{subcontrol-origin:margin;left:12px;padding:0 5px}QProgressBar{border:0;background:#263952;text-align:center}QProgressBar::chunk{background:#2885ee}'''
@@ -35,57 +35,114 @@ class SearchWorker(QThread):
     def run(self):
         try:self.done.emit(metadata.TMDB(self.key).search(self.query,self.kind),'')
         except Exception as e:self.done.emit([],str(e))
+class PosterWorker(QThread):
+    """Fetch TMDB poster thumbnails off the UI thread; send image bytes only."""
+    poster_ready=Signal(int,bytes)
+    def __init__(self,poster_paths):
+        super().__init__()
+        self.poster_paths=list(poster_paths)
+    def run(self):
+        for i,path in enumerate(self.poster_paths):
+            if self.isInterruptionRequested():return
+            # Never accept arbitrary URLs from API data.
+            if not isinstance(path,str) or not re.fullmatch(r"/[A-Za-z0-9_-]+\\.(?:jpg|jpeg|png)",path,re.I):
+                continue
+            try:
+                req=urllib.request.Request('https://image.tmdb.org/t/p/w92'+path,
+                        headers={'User-Agent':'MKVEpisodeManager/0.4.2'})
+                with urllib.request.urlopen(req,timeout=4) as response:
+                    data=response.read(600_001)
+                if len(data)<=600_000 and not self.isInterruptionRequested():
+                    self.poster_ready.emit(i,data)
+            except (OSError,ValueError):
+                pass
+
 class SearchDialog(QDialog):
     def __init__(self,parent,key,kind,query):
         super().__init__(parent)
-        self.setWindowTitle('Possible '+('movies' if kind=='movie' else 'TV series')+' from TMDB')
-        self.resize(760,570)
-        self.key=key;self.kind=kind;self.choice=None;self.worker=None
+        self.setWindowTitle('Choose '+('movie' if kind=='movie' else 'TV series')+' from TMDB')
+        self.resize(830,660)
+        self.key=key;self.kind=kind;self.choice=None;self.worker=None;self.poster_worker=None
         layout=QVBoxLayout(self)
-        warning=QLabel('CONTENT UNVERIFIED — These are TMDB search results, NOT video-identified matches. '
-                       'No accuracy percentage is available. Select the film yourself until dialogue or '
-                       'visual comparisons have produced a supported match.')
+        heading=QLabel('Choose by poster, title and release year')
+        heading.setStyleSheet('font-size:15pt;font-weight:700')
+        layout.addWidget(heading)
+        warning=QLabel('TMDB search suggestions only — these are not automatically verified '
+                       'against your video. Check the DVD cover before approving the rename.')
         warning.setWordWrap(True)
         warning.setStyleSheet('color:#ffd58c;background:#303041;border:1px solid #846132;'
-                              'padding:12px;border-radius:8px;font-weight:600')
+                              'padding:10px;border-radius:8px')
         layout.addWidget(warning)
-        top=QHBoxLayout();self.query=QLineEdit(query);top.addWidget(self.query)
-        b=QPushButton('Search');b.clicked.connect(self.search);top.addWidget(b);layout.addLayout(top)
-        self.status=QLabel('Searching by title only. No video-content verification.')
+        top=QHBoxLayout();self.query=QLineEdit(query)
+        self.query.returnPressed.connect(self.search)
+        top.addWidget(self.query)
+        self.search_button=QPushButton('Search')
+        self.search_button.clicked.connect(self.search)
+        top.addWidget(self.search_button);layout.addLayout(top)
+        self.status=QLabel('Searching TMDB…')
         layout.addWidget(self.status)
         self.results=QListWidget()
+        self.results.setIconSize(QSize(74,110))
+        self.results.setSpacing(4)
         self.results.setWordWrap(True)
-        self.results.setSpacing(6)
         self.results.itemDoubleClicked.connect(lambda _:self.choose())
         layout.addWidget(self.results)
-        select=QPushButton('Use selected title (manual choice)')
+        select=QPushButton('Use selected title')
         select.setObjectName('primary')
         select.clicked.connect(self.choose)
         layout.addWidget(select)
         self.search()
     def search(self):
         if not self.query.text().strip():return
-        self.results.clear();self.status.setText('Searching TMDB — no video comparison…')
+        if self.worker and self.worker.isRunning():return
+        self.stop_posters()
+        self.results.clear()
+        self.search_button.setEnabled(False)
+        self.status.setText('Searching TMDB…')
         self.worker=SearchWorker(self.key,self.query.text().strip(),self.kind)
-        self.worker.done.connect(self.show_results);self.worker.start()
+        self.worker.done.connect(self.show_results)
+        self.worker.finished.connect(lambda:self.search_button.setEnabled(True))
+        self.worker.start()
     def show_results(self,results,error):
-        self.status.setText(error or f'{len(results)} possible titles — not ranked by footage matching')
+        self.status.setText(error or f'{len(results)} possible titles — select by poster or name')
+        poster_paths=[]
         for candidate in results:
             title=candidate.get('title') or candidate.get('name') or 'Untitled'
             date=candidate.get('release_date') or candidate.get('first_air_date') or ''
-            overview=(candidate.get('overview') or 'No synopsis available')[:210]
-            entry=QListWidgetItem(f'POSSIBLE MATCH · NOT VERIFIED\\n{title} ({date[:4] or "year unknown"})\\n{overview}')
+            overview=(candidate.get('overview') or 'No synopsis available')[:135]
+            entry=QListWidgetItem(f'{title}  ({date[:4] or "Year unknown"})\\n{overview}')
             entry.setData(Qt.UserRole,candidate)
+            entry.setSizeHint(QSize(100,122))
             self.results.addItem(entry)
+            poster_paths.append(candidate.get('poster_path'))
         if not results and not error:
-            self.status.setText('No TMDB titles found. Try another title or spelling.')
+            self.status.setText('No TMDB titles found. Try a different spelling.')
+        if poster_paths:
+            self.poster_worker=PosterWorker(poster_paths)
+            self.poster_worker.poster_ready.connect(self.show_poster)
+            self.poster_worker.start()
+    def show_poster(self,index,data):
+        if not (0<=index<self.results.count()):return
+        image=QPixmap()
+        if image.loadFromData(data):
+            self.results.item(index).setIcon(QIcon(image))
+    def stop_posters(self):
+        if self.poster_worker and self.poster_worker.isRunning():
+            self.poster_worker.requestInterruption()
+            self.poster_worker.wait()
+        self.poster_worker=None
     def choose(self):
-        row=self.results.currentItem()
-        if row is None:
-            QMessageBox.information(self,'Choose a title','Select a result first.')
+        item=self.results.currentItem()
+        if item is None:
+            QMessageBox.information(self,'Choose a title','Click a movie or TV series first.')
             return
-        self.choice=row.data(Qt.UserRole)
+        self.choice=item.data(Qt.UserRole)
         self.accept()
+    def done(self,result):
+        self.stop_posters()
+        if self.worker and self.worker.isRunning():
+            self.worker.wait()
+        super().done(result)
 class Main(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle('MKV Episode Manager • v0.4.2 Subtitle Identification Test');self.resize(1420,900)

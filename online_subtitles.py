@@ -97,21 +97,33 @@ def search(api_key, title, kind, season=None, tmdb_id=None):
     return search_with_diagnostics(api_key, title, kind, season, tmdb_id)["subtitles"]
 
 def _normalise_subdl_url(path):
-    """Only permit known SubDL HTTPS download links; errors disclose format, not URL."""
-    if not isinstance(path, str) or not path.strip():
-        raise ValueError("Invalid provider URL: missing or non-text link")
+    """Validate an official SubDL URL, including its documented api_key query.
+
+    Only HTTPS dl.subdl.com/subtitle/... is allowed. Other query parameters,
+    credentials in the authority, fragments and path traversal are rejected.
+    Never print the URL or its query (the API key may be present).
+    """
+    if not isinstance(path, str) or not path.strip() or len(path) > 4096:
+        raise ValueError("Invalid provider URL: missing or oversized link")
     path = path.strip()
     if path.startswith("/subtitle/"):
         path = "https://" + DOWNLOAD_HOST + path
-    elif path.startswith("//" ):
+    elif path.startswith("//"):
         raise ValueError("Invalid provider URL: protocol-relative URL")
-    parsed = urllib.parse.urlsplit(path)
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in path):
+        raise ValueError("Invalid provider URL: control character")
+    try:
+        parsed = urllib.parse.urlsplit(path)
+        port = parsed.port
+    except ValueError:
+        raise ValueError("Invalid provider URL: malformed address") from None
     if parsed.scheme != "https":
         raise ValueError("Invalid provider URL: unexpected scheme")
-    if parsed.hostname != DOWNLOAD_HOST or parsed.username or parsed.password or parsed.port:
+    if (parsed.hostname != DOWNLOAD_HOST or parsed.username or
+            parsed.password or port is not None or parsed.netloc != DOWNLOAD_HOST):
         raise ValueError("Invalid provider URL: unexpected host")
-    if parsed.query or parsed.fragment:
-        raise ValueError("Invalid provider URL: unexpected query/fragment")
+    if parsed.fragment:
+        raise ValueError("Invalid provider URL: unexpected fragment")
     if "\\" in parsed.path:
         raise ValueError("Invalid provider URL: invalid path separator")
     decoded = urllib.parse.unquote(parsed.path)
@@ -119,29 +131,52 @@ def _normalise_subdl_url(path):
         raise ValueError("Invalid provider URL: unexpected download path")
     if not re.fullmatch(r"/subtitle/[a-zA-Z0-9._~/-]+", decoded):
         raise ValueError("Invalid provider URL: unsupported path characters")
-    if any(segment in ("", ".", "..") for segment in decoded.split("/")[2:]):
+    if any(part in ("", ".", "..") for part in decoded.split("/")[2:]):
         raise ValueError("Invalid provider URL: unsafe path")
-    return urllib.parse.urlunsplit(("https", DOWNLOAD_HOST, parsed.path, "", ""))
+    if parsed.query:
+        try:
+            parameters = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True,
+                                                strict_parsing=True, max_num_fields=2)
+        except ValueError:
+            raise ValueError("Invalid provider URL: malformed query") from None
+        if (len(parameters) != 1 or parameters[0][0] != "api_key" or
+                not parameters[0][1] or len(parameters[0][1]) > 512):
+            raise ValueError("Invalid provider URL: unsupported query parameters")
+    return urllib.parse.urlunsplit(("https", DOWNLOAD_HOST, parsed.path, parsed.query, ""))
+
+
+class _SubDLRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject redirects to any other origin or unapproved path before following."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            safe_url = _normalise_subdl_url(newurl)
+        except ValueError:
+            raise ValueError("Redirect outside approved SubDL download location") from None
+        return super().redirect_request(req, fp, code, msg, headers, safe_url)
+
 
 def _download(path):
-    """Download only HTTPS references from the official SubDL host."""
+    """Download one reference, keeping signed/provider URLs out of logs and errors."""
     url = _normalise_subdl_url(path)
-    req = urllib.request.Request(url, headers={"User-Agent": "MKVEpisodeManager/0.4.2"})
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "MKVEpisodeManager/0.4.2"})
+    opener = urllib.request.build_opener(_SubDLRedirectHandler())
     try:
-        with urllib.request.urlopen(req, timeout=25) as response:
-            final = urllib.parse.urlsplit(response.geturl())
-            if final.scheme != "https" or final.netloc != DOWNLOAD_HOST:
-                raise ValueError("Redirect outside SubDL download host")
+        with opener.open(request, timeout=25) as response:
+            _normalise_subdl_url(response.geturl())
             content = response.read(MAX_DOWNLOAD + 1)
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
             raise RuntimeError("HTTP 429: SubDL download rate limit") from None
         if exc.code in (401, 403):
-            raise RuntimeError("HTTP " + str(exc.code) + ": SubDL download access denied or quota") from None
+            raise RuntimeError("HTTP " + str(exc.code) +
+                               ": SubDL download access denied or quota") from None
         if exc.code == 404:
             raise RuntimeError("HTTP 404: subtitle reference unavailable") from None
         raise RuntimeError("HTTP " + str(exc.code) + ": subtitle download rejected") from None
-    except (OSError, urllib.error.URLError):
+    except urllib.error.URLError:
+        raise RuntimeError("Network error fetching subtitle from SubDL") from None
+    except OSError:
         raise RuntimeError("Network error fetching subtitle from SubDL") from None
     if len(content) > MAX_DOWNLOAD:
         raise ValueError("Subtitle download exceeded 15 MB size limit")

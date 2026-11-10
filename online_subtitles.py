@@ -1,0 +1,279 @@
+"""SubDL v1 subtitle reference provider.
+
+Searches by the DVD's user-provided movie/series title, not generic MKV filenames.
+Downloads are temporary and limited; never include API keys in errors or logs.
+The provider requires a user-obtained SubDL API key.
+"""
+import io
+import collections
+import json
+import urllib.error
+import re
+import urllib.parse
+import urllib.request
+import zipfile
+from pathlib import Path
+
+API_URL = "https://api.subdl.com/api/v1/subtitles"
+DOWNLOAD_HOST = "dl.subdl.com"
+MAX_DOWNLOAD = 15 * 1024 * 1024
+MAX_UNPACKED = 20 * 1024 * 1024
+EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa", ".txt"}
+
+def _search_once(api_key, title, kind, season=None, tmdb_id=None):
+    """Return metadata and raw subtitle results, without hiding empty responses."""
+    parameters = {"api_key": api_key.strip(), "type": kind,
+                  "languages": "EN", "subs_per_page": 30, "unpack": 1,
+                  "client": "custom_integration"}
+    if tmdb_id is None:
+        parameters["film_name"] = title.strip()
+    else:
+        parameters["tmdb_id"] = int(tmdb_id)
+    if kind == "tv" and season is not None:
+        parameters["season_number"] = int(season)
+    url = API_URL + "?" + urllib.parse.urlencode(parameters)
+    req = urllib.request.Request(url, headers={"Accept": "application/json",
+                                               "User-Agent": "MKVEpisodeManager/0.4.2"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            payload = response.read(2 * 1024 * 1024 + 1)
+    except Exception:
+        raise RuntimeError("SubDL request failed (network, quota or provider error). Verify internet and key.") from None
+    if len(payload) > 2 * 1024 * 1024:
+        raise RuntimeError("SubDL search response exceeds size limit")
+    try:
+        obj = json.loads(payload)
+    except ValueError:
+        raise RuntimeError("SubDL returned invalid JSON") from None
+    if not isinstance(obj, dict):
+        raise RuntimeError("SubDL response is not an object")
+    if obj.get("status") is not True:
+        # Provider errors should be distinguishable from zero search results.
+        # Do not echo arbitrary provider text: it could include supplied credentials.
+        raise RuntimeError("SubDL rejected the search; check API key and account quota.")
+    results = obj.get("results") or []
+    subtitles = obj.get("subtitles") or []
+    if not isinstance(results, list) or not isinstance(subtitles, list):
+        raise RuntimeError("Unexpected SubDL response shape")
+    return {"results": results, "subtitles": subtitles[:30]}
+
+def search_with_diagnostics(api_key, title, kind, season=None, tmdb_id=None):
+    """Prefer exact selected TMDB ID, then retry with DVD-cover title on zero results."""
+    if not api_key.strip():
+        raise ValueError("Enter your own SubDL API key")
+    if not title.strip():
+        raise ValueError("Enter the movie/series name from its DVD cover")
+    if kind not in {"movie", "tv"}:
+        raise ValueError("Invalid media type")
+    attempts = []
+    if tmdb_id:
+        attempts.append(("TMDB ID", tmdb_id))
+    attempts.append(("DVD-cover title", None))
+    summary = []
+    last = {"results": [], "subtitles": []}
+    for label, identifier in attempts:
+        try:
+            found = _search_once(api_key, title, kind, season, identifier)
+        except RuntimeError as exc:
+            summary.append(label + ": provider error")
+            # No silent fallback when exact identity was rejected: attempt cover-title search.
+            if label == "DVD-cover title":
+                return {"subtitles": [], "results": [], "status": str(exc),
+                        "attempts": summary}
+            continue
+        last = found
+        summary.append(label + ": " + str(len(found["results"])) + " titles, " +
+                       str(len(found["subtitles"])) + " subtitle listings")
+        if found["subtitles"]:
+            return {**found, "attempts": summary, "status": "Listings found"}
+    status = ("SubDL returned no English subtitle listings for the selected title/season"
+              if not last["subtitles"] else "Listings found")
+    if all("provider error" in x for x in summary):
+        status = "SubDL search failed; check API key, quota or connection"
+    return {**last, "status": status, "attempts": summary}
+
+def search(api_key, title, kind, season=None, tmdb_id=None):
+    """Compatible list-returning search API for earlier integrations."""
+    return search_with_diagnostics(api_key, title, kind, season, tmdb_id)["subtitles"]
+
+def _normalise_subdl_url(path):
+    """Validate an official SubDL URL, including its documented api_key query.
+
+    Only HTTPS dl.subdl.com/subtitle/... is allowed. Other query parameters,
+    credentials in the authority, fragments and path traversal are rejected.
+    Never print the URL or its query (the API key may be present).
+    """
+    if not isinstance(path, str) or not path.strip() or len(path) > 4096:
+        raise ValueError("Invalid provider URL: missing or oversized link")
+    path = path.strip()
+    if path.startswith("/subtitle/"):
+        path = "https://" + DOWNLOAD_HOST + path
+    elif path.startswith("//"):
+        raise ValueError("Invalid provider URL: protocol-relative URL")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in path):
+        raise ValueError("Invalid provider URL: control character")
+    try:
+        parsed = urllib.parse.urlsplit(path)
+        port = parsed.port
+    except ValueError:
+        raise ValueError("Invalid provider URL: malformed address") from None
+    if parsed.scheme != "https":
+        raise ValueError("Invalid provider URL: unexpected scheme")
+    if (parsed.hostname != DOWNLOAD_HOST or parsed.username or
+            parsed.password or port is not None or parsed.netloc != DOWNLOAD_HOST):
+        raise ValueError("Invalid provider URL: unexpected host")
+    if parsed.fragment:
+        raise ValueError("Invalid provider URL: unexpected fragment")
+    if "\\" in parsed.path:
+        raise ValueError("Invalid provider URL: invalid path separator")
+    decoded = urllib.parse.unquote(parsed.path)
+    if not decoded.startswith("/subtitle/"):
+        raise ValueError("Invalid provider URL: unexpected download path")
+    if not re.fullmatch(r"/subtitle/[a-zA-Z0-9._~/-]+", decoded):
+        raise ValueError("Invalid provider URL: unsupported path characters")
+    if any(part in ("", ".", "..") for part in decoded.split("/")[2:]):
+        raise ValueError("Invalid provider URL: unsafe path")
+    if parsed.query:
+        try:
+            parameters = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True,
+                                                strict_parsing=True, max_num_fields=2)
+        except ValueError:
+            raise ValueError("Invalid provider URL: malformed query") from None
+        if (len(parameters) != 1 or parameters[0][0] != "api_key" or
+                not parameters[0][1] or len(parameters[0][1]) > 512):
+            raise ValueError("Invalid provider URL: unsupported query parameters")
+    return urllib.parse.urlunsplit(("https", DOWNLOAD_HOST, parsed.path, parsed.query, ""))
+
+
+class _SubDLRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject redirects to any other origin or unapproved path before following."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            safe_url = _normalise_subdl_url(newurl)
+        except ValueError:
+            raise ValueError("Redirect outside approved SubDL download location") from None
+        return super().redirect_request(req, fp, code, msg, headers, safe_url)
+
+
+def _download(path):
+    """Download one reference, keeping signed/provider URLs out of logs and errors."""
+    url = _normalise_subdl_url(path)
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "MKVEpisodeManager/0.4.2"})
+    opener = urllib.request.build_opener(_SubDLRedirectHandler())
+    try:
+        with opener.open(request, timeout=25) as response:
+            _normalise_subdl_url(response.geturl())
+            content = response.read(MAX_DOWNLOAD + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            raise RuntimeError("HTTP 429: SubDL download rate limit") from None
+        if exc.code in (401, 403):
+            raise RuntimeError("HTTP " + str(exc.code) +
+                               ": SubDL download access denied or quota") from None
+        if exc.code == 404:
+            raise RuntimeError("HTTP 404: subtitle reference unavailable") from None
+        raise RuntimeError("HTTP " + str(exc.code) + ": subtitle download rejected") from None
+    except urllib.error.URLError:
+        raise RuntimeError("Network error fetching subtitle from SubDL") from None
+    except OSError:
+        raise RuntimeError("Network error fetching subtitle from SubDL") from None
+    if len(content) > MAX_DOWNLOAD:
+        raise ValueError("Subtitle download exceeded 15 MB size limit")
+    if not content:
+        raise ValueError("Empty subtitle download")
+    return content
+
+def _write_reference(folder, prefix, filename, data):
+    """Save text references with sanitized names, preventing path traversal."""
+    suffix = Path(filename).suffix.lower()
+    if suffix not in EXTENSIONS or len(data) > MAX_UNPACKED:
+        return []
+    safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(filename).stem)[:65]
+    target = folder / (prefix + "_" + safe + suffix)
+    target.write_bytes(data)
+    return [target]
+
+def _save_payload(folder, prefix, name, payload):
+    # Provider sometimes labels an archive with a generic name; detect ZIP bytes.
+    if not payload.startswith(b"PK\\x03\\x04") and not name.lower().endswith(".zip"):
+        return _write_reference(folder, prefix, name, payload)
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(payload))
+    except (zipfile.BadZipFile, ValueError):
+        return []
+    paths = []
+    total = 0
+    with archive:
+        for member in archive.infolist():
+            if member.is_dir() or Path(member.filename).suffix.lower() not in EXTENSIONS:
+                continue
+            total += member.file_size
+            if total > MAX_UNPACKED or member.file_size > 5 * 1024 * 1024:
+                break
+            if len(paths) >= 30:
+                break
+            with archive.open(member) as file:
+                data = file.read(member.file_size + 1)
+            if len(data) > member.file_size:
+                continue
+            paths.extend(_write_reference(folder, prefix, member.filename, data))
+    return paths
+
+def download_references(api_key, title, kind, destination, season=None, tmdb_id=None):
+    """Download a bounded number of candidate subtitle references to a temporary folder."""
+    root = Path(destination)
+    if not root.is_dir():
+        raise ValueError("Temporary reference folder does not exist")
+    diagnosis = search_with_diagnostics(api_key, title, kind, season=season, tmdb_id=tmdb_id)
+    results = diagnosis["subtitles"]
+    saved = []
+    used = set()
+    diagnostics = collections.Counter()
+    candidates = []
+    for subtitle in results:
+        # For movies, download the provider's ZIP rather than treating unpack
+        # entries as direct text files, unless only unpack entries are available.
+        if kind == "movie" and subtitle.get("url"):
+            candidates.append((subtitle.get("url"), subtitle.get("name") or "reference.zip", 0, 0))
+            continue
+        unpacked = subtitle.get("unpack_files") or []
+        for entry in unpacked:
+            candidates.append((
+                entry.get("url"), entry.get("name") or "reference.srt",
+                entry.get("season", subtitle.get("season")),
+                entry.get("episode", subtitle.get("episode"))))
+        if not unpacked and subtitle.get("url"):
+            candidates.append((subtitle.get("url"), subtitle.get("name") or "reference.zip",
+                               subtitle.get("season"), subtitle.get("episode")))
+    for path, name, season_number, episode_number in candidates:
+        if len(used) >= 15 or len(saved) >= 60:
+            break
+        if not path:
+            diagnostics["Missing provider download links"] += 1
+            continue
+        if path in used:
+            continue
+        used.add(path)
+        prefix = ("S{:02d}E{:02d}".format(int(season_number or 0), int(episode_number or 0))
+                  if kind == "tv" else "movie")
+        prefix += "_" + str(len(used)).zfill(3)
+        try:
+            payload = _download(path)
+            files = _save_payload(root, prefix, name, payload)
+            if files:
+                saved.extend(files)
+                diagnostics["Downloaded"] += len(files)
+            else:
+                diagnostics["Unsupported or invalid subtitle archive"] += 1
+        except (ValueError, OSError, RuntimeError, zipfile.BadZipFile) as exc:
+            # Never include URLs, API credentials or raw provider content.
+            label = str(exc)
+            if label.startswith(("HTTP ", "Invalid provider", "Redirect outside", "Network error",
+                                 "Subtitle download exceeded", "Empty subtitle")):
+                diagnostics[label] += 1
+            else:
+                diagnostics["Subtitle retrieval error"] += 1
+    return {"files": saved, "listing_count": len(results),
+            "attempts": diagnosis["attempts"], "status": diagnosis["status"],
+            "download_attempt_count": len(used), "download_diagnostics": dict(diagnostics)}

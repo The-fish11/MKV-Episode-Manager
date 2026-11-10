@@ -24,3 +24,13 @@ def guess_title(filename):
     stem=re.sub(r'(?i)[-_. ]+t\d{2,3}$','',stem)
     stem=re.sub(r'[_]+',' ',stem).strip(' -_.')
     return stem
+
+
+def title_for_import(existing_title, source_filename):
+    """Use the user's entered DVD title; never infer identity from MakeMKV filenames.
+
+    Filenames such as C1_t00.mkv and title_t00.mkv are just opaque source names.
+    Even descriptive source filenames are not proof of what footage they contain.
+    The filename parameter is intentionally ignored.
+    """
+    return (existing_title or "").strip()

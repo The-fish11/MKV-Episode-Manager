@@ -31,7 +31,7 @@ class OnlineSubtitleTests(unittest.TestCase):
         for name in ("https://evil.example/subtitle/x", "//evil.example/steal",
                      "/subtitle/../../etc/passwd", "/subtitle/12?other=secret"):
             with self.assertRaises(ValueError):
-                online_subtitles._download(name)
+                online_subtitles._normalise_subdl_url(name)
 
     def test_unpacks_safe_text(self):
         buff = io.BytesIO()

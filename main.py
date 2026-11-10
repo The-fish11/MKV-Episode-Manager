@@ -141,11 +141,14 @@ class Main(QMainWindow):
         paths=sorted(p for p in Path(folder).rglob('*') if p.is_file() and p.suffix.lower()=='.mkv' and not p.is_symlink())
         if not paths:QMessageBox.warning(self,'No MKVs','No MKV files found');return
         self.items=[{'path':str(p.resolve()),'episode':'','title':'','year':'','proposed':'','approved':False,'technical':{}} for p in paths]
-        if not self.title.text().strip():
-            guess=metadata.guess_title(paths[0].name)
-            if guess.lower() not in ('title','mkv','title t00','title_t00'):
-                self.title.setText(guess)
-        self.refresh();self.note(f'Imported {len(paths)} MKVs (read-only).')
+        # Preserve an explicitly entered DVD-cover title. Never guess identity
+        # from MakeMKV output filenames such as C1_t00.mkv or title_t00.mkv.
+        explicit_title=metadata.title_for_import(self.title.text(),paths[0].name)
+        if not explicit_title:
+            self.title.clear()
+            self.note('Enter the movie or TV series title printed on your DVD cover. '
+                      'Generic MakeMKV filenames are not used for identification.')
+        self.refresh();self.note(f'Imported {len(paths)} MKVs (read-only; original filenames preserved).')
     def refresh(self):
         self.table.blockSignals(True);self.table.setRowCount(len(self.items))
         for row,x in enumerate(self.items):

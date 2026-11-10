@@ -24,26 +24,55 @@ class DownloadDiagnosticsTests(unittest.TestCase):
             "https://dl.subdl.com.evil.example/subtitle/123.zip",
             "https://dl.subdl.com/subtitle/../other.zip",
             "https://dl.subdl.com/subtitle/%2e%2e/other.zip",
-            "https://dl.subdl.com/subtitle/123.zip?api_key=secret",
             "//evil.example/subtitle/123.zip",
         ]:
             with self.subTest(link=link), self.assertRaises(ValueError):
                 online_subtitles._normalise_subdl_url(link)
 
 
+    def test_documented_authenticated_subdl_urls(self):
+        for link in (
+            "/subtitle/3197651-3213944.zip?api_key=private-example",
+            "https://dl.subdl.com/subtitle/3197651-3213944.zip?api_key=private-example",
+        ):
+            normalized = online_subtitles._normalise_subdl_url(link)
+            self.assertEqual(
+                normalized,
+                "https://dl.subdl.com/subtitle/3197651-3213944.zip?api_key=private-example")
+        with self.assertRaisesRegex(ValueError, "unexpected fragment"):
+            online_subtitles._normalise_subdl_url(
+                "/subtitle/3197651.zip?api_key=private-example#fragment")
+
+    @patch("online_subtitles.urllib.request.build_opener")
+    def test_authenticated_download_uses_exact_host_and_query(self, build):
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*args):return None
+            def geturl(self):
+                return "https://dl.subdl.com/subtitle/123.zip?api_key=private-example"
+            def read(self,count):return b"reference-data"
+        build.return_value.open.return_value = Response()
+        result = online_subtitles._download(
+            "/subtitle/123.zip?api_key=private-example")
+        self.assertEqual(result,b"reference-data")
+        self.assertEqual(build.return_value.open.call_args.args[0].full_url,
+                         "https://dl.subdl.com/subtitle/123.zip?api_key=private-example")
+
     def test_format_diagnostics_are_safe(self):
         for link,expected in [
             ("https://example.org/subtitle/abc.zip","unexpected host"),
             ("http://dl.subdl.com/subtitle/abc.zip","unexpected scheme"),
             ("https://dl.subdl.com/other/abc.zip","unexpected download path"),
-            ("https://dl.subdl.com/subtitle/abc.zip?key=secret","unexpected query/fragment")
+            ("https://dl.subdl.com/subtitle/abc.zip?key=secret","unsupported query parameters")
         ]:
             with self.subTest(expected=expected), self.assertRaisesRegex(ValueError,expected) as ctx:
                 online_subtitles._normalise_subdl_url(link)
             self.assertNotIn("secret",str(ctx.exception))
 
-    @patch("online_subtitles.urllib.request.urlopen",side_effect=urllib.error.HTTPError("redacted",429,"rate limit",{},None))
-    def test_http429_is_explained_without_url(self, _):
+    @patch("online_subtitles.urllib.request.build_opener")
+    def test_http429_is_explained_without_url(self, opener):
+        opener.return_value.open.side_effect = urllib.error.HTTPError(
+            "redacted",429,"rate limit",{},None)
         with self.assertRaisesRegex(RuntimeError,"HTTP 429"):
             online_subtitles._download("/subtitle/123-456.zip")
 

@@ -85,6 +85,7 @@ class SearchDialog(QDialog):
         self.results.setIconSize(QSize(74,110))
         self.results.setSpacing(4)
         self.results.setWordWrap(True)
+        self.results.itemClicked.connect(lambda _:self.choose())
         self.results.itemDoubleClicked.connect(lambda _:self.choose())
         layout.addWidget(self.results)
         select=QPushButton('Use selected title')

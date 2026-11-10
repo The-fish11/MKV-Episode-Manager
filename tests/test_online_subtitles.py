@@ -29,7 +29,7 @@ class OnlineSubtitleTests(unittest.TestCase):
 
     def test_reject_unsafe_urls(self):
         for name in ("https://evil.example/subtitle/x", "//evil.example/steal",
-                     "/subtitle/../../etc/passwd", "/subtitle/12?api_key=secret"):
+                     "/subtitle/../../etc/passwd", "/subtitle/12?other=secret"):
             with self.assertRaises(ValueError):
                 online_subtitles._download(name)
 

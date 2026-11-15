@@ -3,7 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt,QThread,Signal,QSize
 from PySide6.QtGui import QPixmap,QIcon,QPainter,QColor
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QPushButton,QComboBox,QSpinBox,QTableWidget,QTableWidgetItem,QHeaderView,QFileDialog,QMessageBox,QDialog,QListWidget,QListWidgetItem,QGridLayout,QScrollArea,QTextEdit,QProgressBar,QCheckBox,QGroupBox)
-import core,metadata,subtitle_match,subtitle_cache
+import core,metadata,subtitle_match,subtitle_cache,subtitle_results
 CSS='''QWidget{background:#101827;color:#e8eef8;font:10pt "Segoe UI"}QPushButton{background:#263952;border:1px solid #39526d;border-radius:8px;padding:9px}QPushButton:hover{background:#345479}QPushButton#primary{background:#2879ed;color:white}QLineEdit,QComboBox,QSpinBox,QTableWidget,QTextEdit,QListWidget{background:#192638;border:1px solid #334862;border-radius:7px;padding:6px}QHeaderView::section{background:#253851;color:#fff;padding:8px;border:0}QGroupBox{border:1px solid #34465d;border-radius:10px;margin-top:10px;padding:12px}QGroupBox::title{subcontrol-origin:margin;left:12px;padding:0 5px}QProgressBar{border:0;background:#263952;text-align:center}QProgressBar::chunk{background:#2885ee}'''
 class CopyWorker(QThread):
     update=Signal(int);done=Signal(list,list)
@@ -154,6 +154,83 @@ class SearchDialog(QDialog):
         if self.worker and self.worker.isRunning():
             self.worker.wait()
         super().done(result)
+class SubtitleResultsDialog(QDialog):
+    """A compact human-readable result with full diagnostics one click away."""
+    def __init__(self,parent,report):
+        super().__init__(parent)
+        self.setWindowTitle('Subtitle analysis results')
+        self.resize(650,450)
+        self.report=report
+        result=subtitle_results.summary(report)
+        layout=QVBoxLayout(self)
+        heading=QLabel(result['heading'])
+        heading.setStyleSheet('font-size:17pt;font-weight:700')
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+
+        explanation=QLabel(result['explanation'])
+        explanation.setWordWrap(True)
+        explanation.setStyleSheet('color:#b7cce7')
+        layout.addWidget(explanation)
+
+        counts=QGroupBox('Analysis summary')
+        fields=QFormLayout(counts)
+        fields.addRow('English dialogue cues',QLabel(str(result['cues'])))
+        fields.addRow('Reference subtitle files',QLabel(str(result['references'])))
+        fields.addRow('Subtitle streams',QLabel(str(result['track_count'])))
+        fields.addRow('OCR transcript',QLabel('Cached — no new OCR' if result['cached']
+                                            else report.get('ocr_status','Not available')))
+        layout.addWidget(counts)
+
+        if result['match']:
+            match=result['match']
+            card=QGroupBox('Best reference subtitle comparison')
+            details=QFormLayout(card)
+            name=QLabel(match['name'])
+            name.setWordWrap(True)
+            details.addRow('Reference',name)
+            details.addRow('Overlap score',QLabel(str(match['score'])+'% (heuristic, not probability)'))
+            details.addRow('Matching dialogue',QLabel(
+                f"{match['windows']} matching 5-word windows; {match['cues']} matching cues"))
+            details.addRow('Evidence',QLabel(
+                'Supported candidate — review required' if match['supported']
+                else 'Insufficient evidence — unverified'))
+            layout.addWidget(card)
+
+        layout.addStretch(1)
+        reminder=QLabel(result['notice'])
+        reminder.setWordWrap(True)
+        reminder.setStyleSheet('color:#ffd58c;font-weight:600')
+        layout.addWidget(reminder)
+        buttons=QHBoxLayout()
+        buttons.addStretch()
+        diagnostic=QPushButton('Diagnostics')
+        diagnostic.clicked.connect(self.show_diagnostics)
+        buttons.addWidget(diagnostic)
+        ok=QPushButton('OK')
+        ok.setObjectName('primary')
+        ok.clicked.connect(self.accept)
+        buttons.addWidget(ok)
+        layout.addLayout(buttons)
+
+    def show_diagnostics(self):
+        detail=QDialog(self)
+        detail.setWindowTitle('Subtitle analysis — full diagnostics')
+        detail.resize(840,680)
+        layout=QVBoxLayout(detail)
+        intro=QLabel('Complete technical report, including subtitle streams, OCR, '
+                     'reference downloads and matching scores.')
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        output=QTextEdit()
+        output.setReadOnly(True)
+        output.setPlainText(subtitle_results.diagnostics_text(self.report))
+        layout.addWidget(output)
+        close=QPushButton('Close diagnostics')
+        close.clicked.connect(detail.accept)
+        layout.addWidget(close)
+        detail.exec()
+
 class Main(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle('MKV Episode Manager • v0.4.2 Subtitle Identification Test');self.resize(1420,900)
@@ -373,32 +450,7 @@ class Main(QMainWindow):
             QMessageBox.warning(self,'Subtitle analysis failed',error);self.note('Subtitle analysis failed.');return
         row=self.subtitle_row
         self.items[row]['subtitle_analysis']=report
-        lines=[report['status'],'',f'Embedded subtitle streams: {len(report["tracks"])}']
-        if 'online_reference_status' in report:
-            lines.extend(['Online subtitle reference search:',report['online_reference_status'],''])
-            for attempt in report.get('online_reference_attempts',[]):
-                lines.append(' - '+attempt)
-            if 'online_download_attempt_count' in report:
-                lines.append('Reference downloads attempted: '+str(report['online_download_attempt_count']))
-                for reason,count in sorted(report.get('online_download_diagnostics',{}).items()):
-                    lines.append(' - '+str(count)+' × '+reason)
-        if 'ocr_status' in report:
-            lines.extend(['Image subtitle OCR:',report['ocr_status'],
-                          'OCR dialogue cues: '+str(report.get('ocr_cue_count',0)),''])
-        for track in report['tracks']:
-            lines.append(f'Stream {track["index"]}: {track["language"]} / {track["codec"]} — {track["status"]} '
-                         f'({track.get("cue_count",0)} dialogue cues)')
-        if report['top_matches']:
-            lines.extend(['','Reference subtitle matches (heuristic overlap, NOT probability of correctness):'])
-            for match in report['top_matches'][:5]:
-                lines.append(f'{match["name"]}: score {match["score"]}% | '
-                             f'{match["matching_windows"]} matching 5-word windows | '
-                             f'{match["matching_cues"]} matching cues | '
-                             f'{"supported" if match["supported"] else "insufficient evidence"}')
-        else:lines.extend(['','No supported content match. Movie/episode is unverified.'])
-        lines.append('')
-        lines.append('Candidate matches require your review. No filename has been approved automatically.')
-        QMessageBox.information(self,'Subtitle analysis results','\n'.join(lines))
+        SubtitleResultsDialog(self,report).exec()
         self.note(f'Subtitle analysis: {Path(self.items[row]["path"]).name}: {report["status"]}')
     def save_project(self):
         path,_=QFileDialog.getSaveFileName(self,'Save project','','MKV project (*.json)')

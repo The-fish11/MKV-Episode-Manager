@@ -233,12 +233,12 @@ class SubtitleResultsDialog(QDialog):
 
 class Main(QMainWindow):
     def __init__(self):
-        super().__init__();self.setWindowTitle('MKV Episode Manager • v0.4.2 Subtitle Identification Test');self.resize(1420,900)
+        super().__init__();self.setWindowTitle('MKV Episode Manager • v0.4.2');self.resize(1420,900)
         self.items=[];self.history=[];self.metadata={};self.episodes={};self.worker=None;self.search_worker=None;self.subtitle_worker=None;self.tmdb_key=os.environ.get('TMDB_API_KEY','')
         self.temp=tempfile.TemporaryDirectory(prefix='mkv_visual_')
         w=QWidget();self.setCentralWidget(w);v=QVBoxLayout(w);v.setContentsMargins(20,16,20,16)
         h=QLabel('MKV Episode Manager   /   Visual Identification');h.setStyleSheet('font-size:22pt;font-weight:700');v.addWidget(h)
-        safety=QLabel('v0.4.2 TEST  •  TMDB + subtitle reference search + scene gallery  •  Manual episode review  •  Copy-only SHA-256 verified export');safety.setStyleSheet('color:#91bcff');v.addWidget(safety)
+        safety=QLabel('v0.4.2  •  TMDB + subtitle reference search + scene gallery  •  Manual episode review  •  Copy-only SHA-256 verified export');safety.setStyleSheet('color:#91bcff');v.addWidget(safety)
         r=QHBoxLayout();self.mode=QComboBox();self.mode.addItems(core.MODES);self.mode.currentTextChanged.connect(self.mode_changed)
         self.title=QLineEdit();self.title.setPlaceholderText('Series or movie title');self.title.textChanged.connect(self.title_changed)
         self.season=QSpinBox();self.season.setRange(0,99);self.season.setValue(1);self.season.valueChanged.connect(self.season_changed)

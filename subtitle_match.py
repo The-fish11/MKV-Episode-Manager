@@ -217,9 +217,17 @@ def analyse_file(mkv, references_dir=None, online=None, progress=None):
                 report["online_download_attempt_count"] = response.get("download_attempt_count", 0)
                 report["online_download_diagnostics"] = response.get("download_diagnostics", {})
                 report["online_reference_attempts"] = response["attempts"]
+                report["online_cached_reference_count"] = response.get("cached_reference_count", 0)
+                report["online_rate_limited"] = bool(response.get("rate_limited"))
                 if response["files"]:
                     report["online_reference_status"] = (
-                        str(len(response["files"])) + " reference file(s) downloaded")
+                        str(len(response["files"])) + " reference file(s) available (" +
+                        str(report["online_cached_reference_count"]) + " reused from local cache)")
+                    if report["online_rate_limited"]:
+                        report["online_reference_status"] += "; SubDL download limit reached"
+                elif report["online_rate_limited"]:
+                    report["online_reference_status"] = (
+                        "SubDL download limit reached — no cached references available for comparison")
                 elif response["listing_count"]:
                     report["online_reference_status"] = (
                         str(response["listing_count"]) +
@@ -292,6 +300,8 @@ def analyse_file(mkv, references_dir=None, online=None, progress=None):
     report["top_matches"] = report["top_matches"][:8]
     if report["top_matches"] and report["top_matches"][0]["supported"]:
         report["status"] = "Supported subtitle comparison candidate — manual review required"
+    elif report.get("online_rate_limited") and not report.get("online_reference_count"):
+        report["status"] = "SubDL quota reached — dialogue comparison unavailable"
     elif report.get("ocr_cue_count"):
         report["status"] = "English dialogue available; no supported reference match"
     elif any(t.get("status") == "Text extracted" for t in report["tracks"]):

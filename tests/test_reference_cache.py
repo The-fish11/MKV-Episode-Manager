@@ -77,6 +77,24 @@ class ReferenceCacheTests(unittest.TestCase):
         self.assertEqual(result["download_attempt_count"],1)
         download.assert_called_once()
 
+    @patch("online_subtitles.search_with_diagnostics")
+    @patch("online_subtitles._download")
+    def test_cached_references_are_processed_before_a_rate_limited_new_url(self,download,search):
+        download.side_effect=RuntimeError("HTTP 429: SubDL download rate limit")
+        self.assertTrue(reference_cache.store(self.link,"user-key",self.payload))
+        search.return_value={
+            "subtitles":[
+                {"name":"Uncached.zip","url":"/subtitle/999-1000.zip"},
+                {"name":"Cached.zip","url":self.link}],
+            "attempts":[],"status":"Listings found"}
+        with tempfile.TemporaryDirectory() as folder:
+            result=online_subtitles.download_references("user-key","FlashForward","movie",folder)
+        self.assertTrue(result["rate_limited"])
+        self.assertEqual(result["cached_reference_count"],1)
+        self.assertEqual(len(result["files"]),1)
+        self.assertEqual(result["download_attempt_count"],1)
+        download.assert_called_once()
+
     def test_expired_cache_entry_is_ignored(self):
         self.assertTrue(reference_cache.store(self.link,"user-key",self.payload))
         cached=reference_cache._entry_path(self.link,"user-key")

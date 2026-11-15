@@ -232,6 +232,7 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
     used = set()
     diagnostics = collections.Counter()
     cached_count = 0
+    network_attempts = 0
     rate_limited = False
     candidates = []
     for subtitle in results:
@@ -267,6 +268,7 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
             payload = reference_cache.load(path, api_key)
             was_cached = payload is not None
             if payload is None:
+                network_attempts += 1
                 payload = _download(path)
             files = _save_payload(root, prefix, name, payload)
             if files:
@@ -293,6 +295,6 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
                 diagnostics["Subtitle retrieval error"] += 1
     return {"files": saved, "listing_count": len(results),
             "attempts": diagnosis["attempts"], "status": diagnosis["status"],
-            "download_attempt_count": len(used) - cached_count,
+            "download_attempt_count": network_attempts,
             "download_diagnostics": dict(diagnostics),
             "cached_reference_count": cached_count, "rate_limited": rate_limited}

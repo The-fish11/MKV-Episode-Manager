@@ -1,7 +1,7 @@
 import json,os,re,sys,tempfile,urllib.request
 from pathlib import Path
 from PySide6.QtCore import Qt,QThread,Signal,QSize
-from PySide6.QtGui import QPixmap,QIcon
+from PySide6.QtGui import QPixmap,QIcon,QPainter,QColor
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QPushButton,QComboBox,QSpinBox,QTableWidget,QTableWidgetItem,QHeaderView,QFileDialog,QMessageBox,QDialog,QListWidget,QListWidgetItem,QGridLayout,QScrollArea,QTextEdit,QProgressBar,QCheckBox,QGroupBox)
 import core,metadata,subtitle_match,subtitle_cache
 CSS='''QWidget{background:#101827;color:#e8eef8;font:10pt "Segoe UI"}QPushButton{background:#263952;border:1px solid #39526d;border-radius:8px;padding:9px}QPushButton:hover{background:#345479}QPushButton#primary{background:#2879ed;color:white}QLineEdit,QComboBox,QSpinBox,QTableWidget,QTextEdit,QListWidget{background:#192638;border:1px solid #334862;border-radius:7px;padding:6px}QHeaderView::section{background:#253851;color:#fff;padding:8px;border:0}QGroupBox{border:1px solid #34465d;border-radius:10px;margin-top:10px;padding:12px}QGroupBox::title{subcontrol-origin:margin;left:12px;padding:0 5px}QProgressBar{border:0;background:#263952;text-align:center}QProgressBar::chunk{background:#2885ee}'''
@@ -60,11 +60,11 @@ class PosterWorker(QThread):
 class SearchDialog(QDialog):
     def __init__(self,parent,key,kind,query):
         super().__init__(parent)
-        self.setWindowTitle('Choose '+('movie' if kind=='movie' else 'TV series')+' from TMDB')
+        self.setWindowTitle('Poster picker v0.4.2 • '+('Movies' if kind=='movie' else 'TV series'))
         self.resize(830,660)
         self.key=key;self.kind=kind;self.choice=None;self.worker=None;self.poster_worker=None
         layout=QVBoxLayout(self)
-        heading=QLabel('Choose by poster, title and release year')
+        heading=QLabel('POSTER PICKER  •  Choose by cover, title and year')
         heading.setStyleSheet('font-size:15pt;font-weight:700')
         layout.addWidget(heading)
         warning=QLabel('TMDB search suggestions only — these are not automatically verified '
@@ -82,7 +82,7 @@ class SearchDialog(QDialog):
         self.status=QLabel('Searching TMDB…')
         layout.addWidget(self.status)
         self.results=QListWidget()
-        self.results.setIconSize(QSize(74,110))
+        self.results.setIconSize(QSize(96,144))
         self.results.setSpacing(4)
         self.results.setWordWrap(True)
         self.results.itemClicked.connect(lambda _:self.choose())
@@ -113,7 +113,8 @@ class SearchDialog(QDialog):
             overview=(candidate.get('overview') or 'No synopsis available')[:135]
             entry=QListWidgetItem(f'{title}  ({date[:4] or "Year unknown"})\n{overview}')
             entry.setData(Qt.UserRole,candidate)
-            entry.setSizeHint(QSize(100,122))
+            entry.setSizeHint(QSize(100,156))
+            entry.setIcon(self.placeholder_icon())
             self.results.addItem(entry)
             poster_paths.append(candidate.get('poster_path'))
         if not results and not error:
@@ -122,6 +123,15 @@ class SearchDialog(QDialog):
             self.poster_worker=PosterWorker(poster_paths)
             self.poster_worker.poster_ready.connect(self.show_poster)
             self.poster_worker.start()
+    @staticmethod
+    def placeholder_icon():
+        image=QPixmap(96,144)
+        image.fill(QColor('#28374a'))
+        painter=QPainter(image)
+        painter.setPen(QColor('#c6d6eb'))
+        painter.drawText(image.rect(),Qt.AlignCenter,'POSTER\nUNAVAILABLE')
+        painter.end()
+        return QIcon(image)
     def show_poster(self,index,data):
         if not (0<=index<self.results.count()):return
         image=QPixmap()

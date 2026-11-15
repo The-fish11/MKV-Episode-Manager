@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
+import reference_cache
 
 API_URL = "https://api.subdl.com/api/v1/subtitles"
 DOWNLOAD_HOST = "dl.subdl.com"
@@ -230,6 +231,9 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
     saved = []
     used = set()
     diagnostics = collections.Counter()
+    cached_count = 0
+    network_attempts = 0
+    rate_limited = False
     candidates = []
     for subtitle in results:
         # For movies, download the provider's ZIP rather than treating unpack
@@ -246,7 +250,14 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
         if not unpacked and subtitle.get("url"):
             candidates.append((subtitle.get("url"), subtitle.get("name") or "reference.zip",
                                subtitle.get("season"), subtitle.get("episode")))
-    for path, name, season_number, episode_number in candidates:
+    # Give locally cached subtitles priority before any new network requests.
+    # This preserves useful offline matches even if SubDL immediately returns 429.
+    prepared = [
+        (candidate, reference_cache.load(candidate[0], api_key) if candidate[0] else None)
+        for candidate in candidates
+    ]
+    prepared.sort(key=lambda item: item[1] is None)
+    for (path, name, season_number, episode_number), cached_payload in prepared:
         if len(used) >= 15 or len(saved) >= 60:
             break
         if not path:
@@ -259,16 +270,31 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
                   if kind == "tv" else "movie")
         prefix += "_" + str(len(used)).zfill(3)
         try:
-            payload = _download(path)
+            # Use references already acquired with this user's key before making
+            # another billable SubDL download. The URL query is never cached.
+            payload = cached_payload
+            was_cached = payload is not None
+            if payload is None:
+                network_attempts += 1
+                payload = _download(path)
             files = _save_payload(root, prefix, name, payload)
             if files:
                 saved.extend(files)
-                diagnostics["Downloaded"] += len(files)
+                if was_cached:
+                    cached_count += len(files)
+                    diagnostics["From local reference cache"] += len(files)
+                else:
+                    diagnostics["Downloaded"] += len(files)
+                    reference_cache.store(path, api_key, payload)
             else:
                 diagnostics["Unsupported or invalid subtitle archive"] += 1
         except (ValueError, OSError, RuntimeError, zipfile.BadZipFile) as exc:
-            # Never include URLs, API credentials or raw provider content.
             label = str(exc)
+            # Stop immediately on HTTP 429 to avoid burning repeated requests.
+            if label.startswith("HTTP 429"):
+                diagnostics["HTTP 429: SubDL rate limit — stopped further downloads"] += 1
+                rate_limited = True
+                break
             if label.startswith(("HTTP ", "Invalid provider", "Redirect outside", "Network error",
                                  "Subtitle download exceeded", "Empty subtitle")):
                 diagnostics[label] += 1
@@ -276,4 +302,6 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
                 diagnostics["Subtitle retrieval error"] += 1
     return {"files": saved, "listing_count": len(results),
             "attempts": diagnosis["attempts"], "status": diagnosis["status"],
-            "download_attempt_count": len(used), "download_diagnostics": dict(diagnostics)}
+            "download_attempt_count": network_attempts,
+            "download_diagnostics": dict(diagnostics),
+            "cached_reference_count": cached_count, "rate_limited": rate_limited}

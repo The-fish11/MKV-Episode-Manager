@@ -177,6 +177,7 @@ class SubtitleResultsDialog(QDialog):
         fields=QFormLayout(counts)
         fields.addRow('English dialogue cues',QLabel(str(result['cues'])))
         fields.addRow('Reference subtitle files',QLabel(str(result['references'])))
+        fields.addRow('Reused from local cache',QLabel(str(result['cached_references'])))
         fields.addRow('Subtitle streams',QLabel(str(result['track_count'])))
         fields.addRow('OCR transcript',QLabel('Cached — no new OCR' if result['cached']
                                             else report.get('ocr_status','Not available')))

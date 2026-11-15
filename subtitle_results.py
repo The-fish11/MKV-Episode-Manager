@@ -18,6 +18,14 @@ def summary(report):
         heading = "Possible dialogue matches — not yet supported"
         explanation = ("Some reference dialogue overlaps, but the match does not meet the "
                        "current evidence threshold. Verify the content manually.")
+    elif report.get("online_rate_limited") and not references:
+        heading = "SubDL daily limit reached — comparison unavailable"
+        explanation = ("English dialogue is ready, but SubDL blocked additional downloads. "
+                       "The available reference cache had no suitable files. "
+                       "Retry later without re-running OCR.")
+    elif not references and report.get("online_listing_count"):
+        heading = "Reference subtitles unavailable — comparison not run"
+        explanation = report.get("online_reference_status") or "No references could be retrieved."
     else:
         heading = "No supported dialogue match"
         explanation = (report.get("online_reference_status") or
@@ -26,6 +34,8 @@ def summary(report):
         "heading": heading,
         "explanation": explanation,
         "references": references,
+        "cached_references": report.get("online_cached_reference_count", 0),
+        "rate_limited": bool(report.get("online_rate_limited")),
         "cues": cues,
         "track_count": len(report.get("tracks") or []),
         "cached": bool(report.get("ocr_cached")),
@@ -55,6 +65,10 @@ def diagnostics_text(report):
         if "online_download_attempt_count" in report:
             lines.append("Reference downloads attempted: " +
                          str(report["online_download_attempt_count"]))
+            lines.append("Downloaded references reused from cache: " +
+                         str(report.get("online_cached_reference_count", 0)))
+            if report.get("online_rate_limited"):
+                lines.append("SubDL rate limit reached — remaining downloads stopped")
             for reason, count in sorted(
                     report.get("online_download_diagnostics", {}).items()):
                 lines.append(" - " + str(count) + " × " + reason)

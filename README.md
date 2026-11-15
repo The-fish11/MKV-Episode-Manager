@@ -2,11 +2,11 @@
 
 A Python/PySide6 desktop app to help inspect, identify and safely name MakeMKV movie and TV files for Jellyfin. **Original MKV files are never changed**, and exported copies require explicit review/approval and SHA-256 verification.
 
-> **Release status:** `main` contains the approved **v0.4** release. This development branch is **v0.4.2 (experimental)** and has additional TMDB, subtitle matching and OCR features. The application is not yet a fully automatic movie or episode recognizer. Do not assume the first TMDB result is a verified match.
+> **Release status:** **v0.4.2** — the approved stable release, combining poster-first TMDB selection, subtitle OCR caching, SubDL reference downloading and dialogue comparison. The application is **not** yet a fully automatic movie or episode recognizer. Always review its proposed filename.
 
 ## Third-party applications and dependencies
 
-The following table lists the tools actually used by the application or its v0.4.2 development features. Download only from the linked official projects.
+The following table lists the tools actually used by the application or its optional subtitle identification features. Download only from the linked official projects.
 
 | Application / service | Required? | What we use it for | Official download / documentation |
 |---|---|---|---|
@@ -26,7 +26,7 @@ The following table lists the tools actually used by the application or its v0.4
 ## Windows 11 setup — step by step
 
 1. Install **Python 3.11 64-bit**.
-2. Download or clone the appropriate GitHub branch into a **new** folder (don't overwrite your stable v0.4 installation).
+2. Download or clone **main** into a **new** folder (keep your previous v0.4 installation as a backup).
 3. Install **FFmpeg** and make sure both `ffmpeg` and `ffprobe` are on Windows **PATH**.
 4. For **DVD image-subtitle OCR**, download **SeConv-Windows-x64.zip** from the official Subtitle Edit releases, extract it, and add the **folder containing `seconv.exe`** to your Windows **User Path**. Install Tesseract with English language data and add the folder containing `tesseract.exe` to User Path.
 5. Open a **new** PowerShell window and verify:
@@ -45,7 +45,7 @@ The following table lists the tools actually used by the application or its v0.4
 
 **Example installation paths only:** One working Windows setup uses `A:\Subtitle Edit\seconv` and `A:\Subtitle Edit\tesseract`. Your own folders can be different. Add directories to PATH, **not** the individual `.exe` paths. Restart PowerShell and the app after editing PATH.
 
-## What works in the v0.4.2 development build
+## What works in v0.4.2
 
 - Import MakeMKV files with generic names such as `C1_t00.mkv` or `title_t00.mkv`. **The app never guesses the movie/series title from an imported MKV filename.** The title field stays blank unless you already entered a title yourself. Choose **Movie** or a TV season mode, enter the title printed on the disc cover (for TV, select the season), and use TMDB to confirm the correct title. Imported filenames remain unchanged.
 - **TMDB poster-first search**: pressing **Find movie / series** shows each candidate with its poster thumbnail, title, release year and short synopsis. Click the poster/title row once to select the right film or TV series. Poster images load progressively so the window stays responsive. If a poster is missing, its title remains selectable. **TMDB results are suggestions, not verified content matches**.
@@ -58,15 +58,15 @@ The following table lists the tools actually used by the application or its v0.4
 
 ## Known limitations / next development improvements
 
-- **v0.4.2 is not a stable release**; real Windows and live SubDL matching still need validation.
+- **Validation scope:** *Flight (2012)* was tested successfully on Windows 11 (17 reference subtitle files downloaded, 1,974 cached English cues, supported heuristic dialogue match). Other movies, discs, subtitle formats and complete TV seasons need additional real-world testing.
 - DVD `dvd_subtitle` / Blu-ray PGS streams are bitmap images: extraction requires both **SeConv and Tesseract**. OCR must be checked for accuracy; some streams or language selections may fail.
 - SubDL API searches require a known title, TMDB identity or season; the service does **not** supply a general reverse-dialogue search across every film/episode. Some searches return no references.
 - OCR comparison against online references is experimental, with no calibrated accuracy %. A no-match result must remain **unverified**, not a guessed title.
 - **Whole-season automatic episode assignment, audio transcription and automatic visual reference matching are not implemented yet.** Do not assign episode numbers by MKV file order.
-- **Persistent English OCR caching is implemented in the development branch**: cached subtitle text is stored locally in `%LOCALAPPDATA%\\MKVEpisodeManager\\subtitle_cache`, keyed to source file metadata plus sampled bytes. Repeated analysis can reuse it without rerunning OCR; use **Clear OCR cache** to remove derived transcripts. The user can import a previously extracted SRT via **Import OCR SRT**. Real Windows validation of this new integration is still pending.
+- **Persistent English OCR caching is implemented and was tested on Windows 11**: cached subtitle text is stored locally in `%LOCALAPPDATA%\\MKVEpisodeManager\\subtitle_cache`, keyed to source file metadata plus sampled bytes. Repeated analysis can reuse it without rerunning OCR; use **Clear OCR cache** to remove derived transcripts. The user can import a previously extracted SRT via **Import OCR SRT**.
 - Video inspection, diagnostics and safe-copy export rely on FFmpeg/Python dependencies, but the originals remain untouched.
 
-See [v0.4.2 subtitle development notes](docs/V0.4.2_SUBTITLE_IDENTIFICATION.md) for experimental details and testing instructions.
+See [v0.4.2 subtitle notes](docs/V0.4.2_SUBTITLE_IDENTIFICATION.md) for technical details and testing instructions.
 
 ## Running tests
 
@@ -80,4 +80,4 @@ These are mostly offline/synthetic tests. They do not substitute for testing act
 
 ## GitHub release policy
 
-Development changes stay on feature branches/draft pull requests. A **stable release merge to `main` requires the project owner's explicit approval**.
+Development changes stay on feature branches/draft pull requests. A **stable release merge to `main` requires the project owner's explicit approval**. The owner approved promoting the successfully tested v0.4.2 features on 16 November 2026.

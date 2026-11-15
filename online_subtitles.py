@@ -250,7 +250,14 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
         if not unpacked and subtitle.get("url"):
             candidates.append((subtitle.get("url"), subtitle.get("name") or "reference.zip",
                                subtitle.get("season"), subtitle.get("episode")))
-    for path, name, season_number, episode_number in candidates:
+    # Give locally cached subtitles priority before any new network requests.
+    # This preserves useful offline matches even if SubDL immediately returns 429.
+    prepared = [
+        (candidate, reference_cache.load(candidate[0], api_key) if candidate[0] else None)
+        for candidate in candidates
+    ]
+    prepared.sort(key=lambda item: item[1] is None)
+    for (path, name, season_number, episode_number), cached_payload in prepared:
         if len(used) >= 15 or len(saved) >= 60:
             break
         if not path:
@@ -265,7 +272,7 @@ def download_references(api_key, title, kind, destination, season=None, tmdb_id=
         try:
             # Use references already acquired with this user's key before making
             # another billable SubDL download. The URL query is never cached.
-            payload = reference_cache.load(path, api_key)
+            payload = cached_payload
             was_cached = payload is not None
             if payload is None:
                 network_attempts += 1

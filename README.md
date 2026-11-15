@@ -56,6 +56,18 @@ The following table lists the tools actually used by the application or its opti
 - **Match evidence**: reports overlap and matching-cue counts. Scores are heuristic, **not a probability or verified identification percentage**. Online lookup, OCR, reference coverage and editions can fail, and successful OCR alone does not prove the title.
 - **Review and export**: every file must be approved before a verified copy is exported into a separate destination. Never overwrite original source files.
 
+## v0.4.3 development — SubDL reference download cache
+
+On the **v0.4.3 development branch**, MKV Episode Manager locally caches successfully downloaded SubDL subtitle references so analysing more MKVs from the same season can reuse existing reference files without making another charged subtitle download. This addresses SubDL's **50-downloads-per-day free account allowance**; search API requests still occur when analysing an MKV. Cache hits and new download attempts are shown in Subtitle Analysis and Diagnostics.
+
+- Cache location on Windows: `%LOCALAPPDATA%\\MKVEpisodeManager\\reference_cache`.
+- Cache lifetime: up to **30 days**; maximum total disk usage **512 MB**. Expired files are removed automatically as new entries are stored.
+- Entries are scoped to the user's SubDL API key using opaque hashes. Neither the key nor signed download URLs are saved to cache filenames or content.
+- When SubDL replies **HTTP 429**, the app stops making additional downloads for that analysis, instead of repeating the blocked requests. The result explains when identification could not proceed because references were unavailable.
+- The cache can be cleared by deleting the **reference_cache** folder with the application closed; this does not affect the separate OCR transcript cache or any original MKV.
+- References must already have been acquired after installing this update; it cannot recover earlier references that v0.4.2 only held temporarily. It does not increase the provider's daily allowance or guarantee full-season coverage.
+- This is a **development feature**, separate from approved stable v0.4.2; a Windows confirmation is still required.
+
 ## Known limitations / next development improvements
 
 - **Validation scope:** *Flight (2012)* was tested successfully on Windows 11 (17 reference subtitle files downloaded, 1,974 cached English cues, supported heuristic dialogue match). Other movies, discs, subtitle formats and complete TV seasons need additional real-world testing.
